@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1.7
+
+ARG DEBIAN_IMAGE=debian:bookworm-slim
+FROM ${DEBIAN_IMAGE}
+
+ARG BITCOIN_SOURCE_REPOSITORY=unknown
+ARG BITCOIN_SOURCE_SHA256=unknown
+ARG BITCOIN_SOURCE_REVISION=unversioned
+ARG BITCOIN_BINARY_SHA256=unknown
+ARG BITCOIN_ARCHITECTURE=unknown
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       bash ca-certificates coreutils findutils gosu gzip iproute2 iptables iputils-ping jq \
+       libatomic1 libevent-core-2.1-7 libevent-extra-2.1-7 libevent-pthreads-2.1-7 \
+       libgcc-s1 libsqlite3-0 libstdc++6 \
+       netcat-openbsd procps tar util-linux \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 bitcoin \
+    && useradd --uid 10001 --gid bitcoin --home-dir /home/bitcoin --create-home --shell /bin/bash bitcoin
+
+COPY bin/bitcoin-binaries.tar.gz /tmp/bitcoin-binaries.tar.gz
+COPY bin/bitcoin-binaries.tar.gz.sha256 /tmp/bitcoin-binaries.tar.gz.sha256
+
+RUN set -eux; \
+    cd /tmp; \
+    sha256sum --check --strict bitcoin-binaries.tar.gz.sha256; \
+    test "$(sha256sum bitcoin-binaries.tar.gz | awk '{print $1}')" = "$BITCOIN_BINARY_SHA256"; \
+    tar -tzf bitcoin-binaries.tar.gz > bitcoin-binaries.members; \
+    if grep -Eq '(^/|(^|/)\.\.(/|$))' bitcoin-binaries.members; then \
+      echo "Binary archive contains an unsafe path" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /payload; \
+    tar --no-same-owner --no-same-permissions -xzf bitcoin-binaries.tar.gz -C /payload; \
+    cd /payload; \
+    sha256sum --check --strict checksums.sha256; \
+    test "$(cat opt/bitcoin/SOURCE_REPOSITORY)" = "$BITCOIN_SOURCE_REPOSITORY"; \
+    test "$(cat opt/bitcoin/SOURCE_SHA256)" = "$BITCOIN_SOURCE_SHA256"; \
+    test "$(cat opt/bitcoin/SOURCE_REVISION)" = "$BITCOIN_SOURCE_REVISION"; \
+    test "$(cat opt/bitcoin/ARCHITECTURE)" = "$BITCOIN_ARCHITECTURE"; \
+    test "$(cat opt/bitcoin/ARCHITECTURE)" = "$(dpkg --print-architecture)"; \
+    install -d -m 0755 /usr/local/bin /opt/bitcoin; \
+    for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do \
+      test -x "usr/local/bin/${binary}"; \
+      install -m 0755 "usr/local/bin/${binary}" "/usr/local/bin/${binary}"; \
+    done; \
+    install -m 0644 opt/bitcoin/COPYING /opt/bitcoin/COPYING; \
+    install -m 0644 opt/bitcoin/SOURCE_REPOSITORY /opt/bitcoin/SOURCE_REPOSITORY; \
+    install -m 0644 opt/bitcoin/SOURCE_SHA256 /opt/bitcoin/SOURCE_SHA256; \
+    install -m 0644 opt/bitcoin/SOURCE_REVISION /opt/bitcoin/SOURCE_REVISION; \
+    install -m 0644 opt/bitcoin/ARCHITECTURE /opt/bitcoin/ARCHITECTURE; \
+    install -m 0644 opt/bitcoin/VERSION /opt/bitcoin/VERSION; \
+    printf '%s\n' "$BITCOIN_BINARY_SHA256" > /opt/bitcoin/BINARY_ARCHIVE_SHA256; \
+    for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do \
+      command -v "$binary"; \
+      if ldd "/usr/local/bin/${binary}" 2>/dev/null | grep -q 'not found'; then \
+        ldd "/usr/local/bin/${binary}" >&2; \
+        exit 1; \
+      fi; \
+    done; \
+    rm -rf /payload /tmp/bitcoin-binaries.tar.gz /tmp/bitcoin-binaries.tar.gz.sha256 /tmp/bitcoin-binaries.members
+
+ENV BITCOIN_DATADIR=/data \
+    BITCOIN_SOURCE_REPOSITORY=${BITCOIN_SOURCE_REPOSITORY} \
+    BITCOIN_SOURCE_SHA256=${BITCOIN_SOURCE_SHA256} \
+    BITCOIN_SOURCE_REVISION=${BITCOIN_SOURCE_REVISION} \
+    BITCOIN_BINARY_SHA256=${BITCOIN_BINARY_SHA256} \
+    BITCOIN_ARCHITECTURE=${BITCOIN_ARCHITECTURE} \
+    SIGNET_CHALLENGE=51 \
+    RPC_USER=bitcoinenv \
+    RPC_PASSWORD=bitcoinenv-internal-only

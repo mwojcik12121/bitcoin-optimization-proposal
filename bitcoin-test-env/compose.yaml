@@ -1,0 +1,197 @@
+name: bitcoin-env
+
+x-node-environment: &node-environment
+  SCENARIO_ID: ${SCENARIO_ID:-0}
+  ACTIVE_NODES: ${ACTIVE_NODES:-}
+  BOOTSTRAP_TARGET_HEIGHT: "200"
+  BOOTSTRAP_TIMEOUT_SECONDS: "900"
+  RPC_USER: bitcoinenv
+  RPC_PASSWORD: bitcoinenv-internal-only
+  RPC_PORT: "38332"
+  P2P_PORT: "38333"
+  SIGNET_CHALLENGE: "51"
+  BITCOIN_DBCACHE_MB: "128"
+  BITCOIN_MAXMEMPOOL_MB: "64"
+  BITCOIN_PAR: "1"
+
+x-node-common: &node-common
+  init: true
+  restart: "no"
+  pull_policy: never
+  command: ["${SCENARIO_ID:-0}"]
+  cap_add:
+    - NET_ADMIN
+  security_opt:
+    - no-new-privileges:true
+  cpus: "1.0"
+  mem_limit: 3g
+  memswap_limit: 3g
+  pids_limit: 256
+
+  read_only: true
+  volumes:
+    - type: tmpfs
+      target: /data
+      tmpfs:
+        size: 100629741568
+        mode: 0700
+    - type: tmpfs
+      target: /run
+      tmpfs:
+        size: 16777216
+        mode: 0755
+    - type: tmpfs
+      target: /tmp
+      tmpfs:
+        size: 16777216
+        mode: 01777
+  stop_grace_period: 30s
+  networks:
+    - bitcoin_internal
+  ulimits:
+    nofile:
+      soft: 4096
+      hard: 4096
+
+services:
+  node01:
+    <<: *node-common
+    image: bitcoin-env/node01:${NODE_IMAGE_TAG:-source-local}
+    hostname: node01
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "01"
+        NODE_ROLE: miner,wallet
+    environment:
+      <<: *node-environment
+      NODE_ID: "01"
+      NODE_NAME: node01
+      NODE_ROLE: miner,wallet
+
+  node02:
+    <<: *node-common
+    image: bitcoin-env/node02:${NODE_IMAGE_TAG:-source-local}
+    hostname: node02
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "02"
+        NODE_ROLE: miner
+    environment:
+      <<: *node-environment
+      NODE_ID: "02"
+      NODE_NAME: node02
+      NODE_ROLE: miner
+
+  node03:
+    <<: *node-common
+    image: bitcoin-env/node03:${NODE_IMAGE_TAG:-source-local}
+    hostname: node03
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "03"
+        NODE_ROLE: miner
+    environment:
+      <<: *node-environment
+      NODE_ID: "03"
+      NODE_NAME: node03
+      NODE_ROLE: miner
+
+  node04:
+    <<: *node-common
+    image: bitcoin-env/node04:${NODE_IMAGE_TAG:-source-local}
+    hostname: node04
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "04"
+        NODE_ROLE: miner
+    environment:
+      <<: *node-environment
+      NODE_ID: "04"
+      NODE_NAME: node04
+      NODE_ROLE: miner
+
+  node05:
+    <<: *node-common
+    image: bitcoin-env/node05:${NODE_IMAGE_TAG:-source-local}
+    hostname: node05
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "05"
+        NODE_ROLE: validator,wallet
+    environment:
+      <<: *node-environment
+      NODE_ID: "05"
+      NODE_NAME: node05
+      NODE_ROLE: validator,wallet
+
+  node06:
+    <<: *node-common
+    image: bitcoin-env/node06:${NODE_IMAGE_TAG:-source-local}
+    hostname: node06
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "06"
+        NODE_ROLE: validator
+    environment:
+      <<: *node-environment
+      NODE_ID: "06"
+      NODE_NAME: node06
+      NODE_ROLE: validator
+
+  node07:
+    <<: *node-common
+    image: bitcoin-env/node07:${NODE_IMAGE_TAG:-source-local}
+    hostname: node07
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "07"
+        NODE_ROLE: validator
+    environment:
+      <<: *node-environment
+      NODE_ID: "07"
+      NODE_NAME: node07
+      NODE_ROLE: validator
+
+  node08:
+    <<: *node-common
+    image: bitcoin-env/node08:${NODE_IMAGE_TAG:-source-local}
+    hostname: node08
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.node
+      args:
+        CORE_IMAGE: ${CORE_IMAGE:-bitcoin-env/core-source:local}
+        NODE_ID: "08"
+        NODE_ROLE: validator
+    environment:
+      <<: *node-environment
+      NODE_ID: "08"
+      NODE_NAME: node08
+      NODE_ROLE: validator
+
+networks:
+  bitcoin_internal:
+    driver: bridge
+    internal: true
+    attachable: false

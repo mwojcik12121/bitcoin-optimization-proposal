@@ -1,0 +1,7 @@
+*.zip
+*.tar
+*.tar.gz
+.env
+bin/bitcoin-binaries.tar.gz
+bin/bitcoin-binaries.tar.gz.sha256
+logs/*.log

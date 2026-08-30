@@ -6,7 +6,6 @@ source /controls/network.sh
 
 assert_initial_state
 wait_for_peer_count 7 180
-log_peer_connections "full-mesh"
 wait_until_epoch "$SCENARIO_START_EPOCH"
 
 PARTITION_HEAL_EPOCH=$((SCENARIO_START_EPOCH + 40))
@@ -20,9 +19,7 @@ transaction_pid=$!
 
 network_partition_group node02 node04 node05 node08
 sleep 2
-log_peer_connections "partitioned"
 
-# Faster miner on partition A: one block every four seconds.
 mine_blocks_at_offsets \
   "$SCENARIO_START_EPOCH" "10,14,18,22,26,30,34" wallet01 >/dev/null
 
@@ -32,7 +29,6 @@ winning_tip=$(bitcoin_rpc getbestblockhash)
 wait_until_epoch "$PARTITION_HEAL_EPOCH"
 network_heal_group node02 node04 node05 node08
 wait_for_peer_count 7 180
-log_peer_connections "healed"
 wait_for_same_tip node02 180
 wait_for_same_tip node04 180
 wait_for_same_tip node05 180

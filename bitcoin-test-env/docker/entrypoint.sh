@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+source /controls/logging.sh
+
 NODE_ID=${NODE_ID:-}
 NODE_NAME=${NODE_NAME:-}
 NODE_ROLE=${NODE_ROLE:-validator}
@@ -19,11 +21,11 @@ SIGNET_CHALLENGE=${SIGNET_CHALLENGE:-51}
 BITCOIN_DBCACHE_MB=${BITCOIN_DBCACHE_MB:-128}
 BITCOIN_MAXMEMPOOL_MB=${BITCOIN_MAXMEMPOOL_MB:-64}
 BITCOIN_PAR=${BITCOIN_PAR:-1}
-BITCOIN_SOURCE_SHA256=${BITCOIN_SOURCE_SHA256:-}
+BITCOIN_SOURCE_REPOSITORY=${BITCOIN_SOURCE_REPOSITORY:-}
 BITCOIN_SOURCE_REVISION=${BITCOIN_SOURCE_REVISION:-}
+BITCOIN_ARCHITECTURE=${BITCOIN_ARCHITECTURE:-}
 BITCOIN_COMPILED_VERSION=
 RUN_DIR=/run/bitcoin-env
-BOOTSTRAP_PROGRESS_FILE=${RUN_DIR}/bootstrap-progress.log
 CONF=${BITCOIN_DATADIR}/bitcoin.conf
 BITCOIND_PID=
 SHUTTING_DOWN=0
@@ -38,7 +40,7 @@ SCENARIO_START_EPOCH=0
 declare -a ACTIVE_NODE_LIST=()
 
 log() {
-  printf '%s [%s][entrypoint] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${NODE_NAME:-unknown}" "$*" >&2
+  test_log INFO entrypoint "$*"
 }
 
 local_cli() {
@@ -72,8 +74,9 @@ rpc_for_node() {
   fi
 }
 
-verify_binary_provenance() {
-  local binary embedded_sha256 embedded_revision
+verify_binary_metadata() {
+  local binary metadata_file
+  local embedded_repository embedded_revision embedded_architecture embedded_version actual_version
 
   for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do
     command -v "$binary" >/dev/null 2>&1 || {
@@ -81,24 +84,36 @@ verify_binary_provenance() {
       return 1
     }
   done
-  if [[ ! -r /opt/bitcoin/SOURCE_SHA256 || ! -r /opt/bitcoin/SOURCE_REVISION || ! -r /opt/bitcoin/VERSION ]]; then
-    log "Compiled-binary provenance files are missing"
-    return 1
-  fi
+  for metadata_file in SOURCE_REPOSITORY SOURCE_REVISION ARCHITECTURE VERSION; do
+    if [[ ! -r "/opt/bitcoin/${metadata_file}" ]]; then
+      log "Compiled-binary metadata file is missing: ${metadata_file}"
+      return 1
+    fi
+  done
 
-  embedded_sha256=$(tr -d '[:space:]' < /opt/bitcoin/SOURCE_SHA256)
+  embedded_repository=$(tr -d '[:space:]' < /opt/bitcoin/SOURCE_REPOSITORY)
   embedded_revision=$(tr -d '[:space:]' < /opt/bitcoin/SOURCE_REVISION)
-  BITCOIN_COMPILED_VERSION=$(head -n 1 /opt/bitcoin/VERSION)
+  embedded_architecture=$(tr -d '[:space:]' < /opt/bitcoin/ARCHITECTURE)
+  embedded_version=$(head -n 1 /opt/bitcoin/VERSION)
+  actual_version=$(bitcoind --version | head -n 1)
+  BITCOIN_COMPILED_VERSION=$embedded_version
 
-  if [[ ! "$embedded_sha256" =~ ^[0-9a-f]{64}$ || -z "$embedded_revision" || -z "$BITCOIN_COMPILED_VERSION" ]]; then
-    log "Compiled-binary provenance is invalid"
+  if [[ ! "$embedded_repository" =~ ^[A-Za-z0-9._-]+$ \
+        || "$embedded_repository" == "." \
+        || "$embedded_repository" == ".." \
+        || -z "$embedded_revision" \
+        || ! "$embedded_architecture" =~ ^(amd64|arm64)$ \
+        || -z "$embedded_version" \
+        || "$actual_version" != "$embedded_version" ]]; then
+    log "Compiled-binary metadata is invalid"
     return 1
   fi
-  if [[ "$BITCOIN_SOURCE_SHA256" != "$embedded_sha256" || "$BITCOIN_SOURCE_REVISION" != "$embedded_revision" ]]; then
-    log "Compiled-binary provenance does not match the image environment"
+  if [[ "$BITCOIN_SOURCE_REPOSITORY" != "$embedded_repository" \
+        || "$BITCOIN_SOURCE_REVISION" != "$embedded_revision" \
+        || "$BITCOIN_ARCHITECTURE" != "$embedded_architecture" ]]; then
+    log "Compiled-binary metadata does not match the image environment"
     return 1
   fi
-  log "Using ${BITCOIN_COMPILED_VERSION}; source_sha256=${BITCOIN_SOURCE_SHA256}; revision=${BITCOIN_SOURCE_REVISION}"
 }
 
 shutdown() {
@@ -109,7 +124,6 @@ shutdown() {
   SHUTTING_DOWN=1
   trap - EXIT TERM INT
   set +e
-  log "Stopping Bitcoin Core"
   local_cli stop >/dev/null 2>&1 || true
   if [[ -n "${BITCOIND_PID:-}" ]]; then
     for _ in $(seq 1 120); do
@@ -229,14 +243,11 @@ detect_network_subnet() {
 configure_node() {
   local peer peer_count=0
 
-  # /data is a tmpfs mount point and must not itself be removed.
   find "$BITCOIN_DATADIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
   rm -rf "$RUN_DIR"
   install -d -m 0755 "$BITCOIN_DATADIR" "$RUN_DIR"
-  : > "$BOOTSTRAP_PROGRESS_FILE"
 
   cat > "$CONF" <<CFG
-# Use the original Bitcoin Core application on a private custom Signet.
 signet=1
 signetchallenge=${SIGNET_CHALLENGE}
 server=1
@@ -259,7 +270,6 @@ logthreadnames=1
 loglevelalways=1
 logips=1
 
-# Enable Bitcoin Core's own block, transaction, validation, and P2P logs from startup.
 debug=net
 debug=validation
 debug=mempool
@@ -299,7 +309,6 @@ CFG
 }
 
 start_bitcoin() {
-  log "Starting locally compiled Bitcoin Core; role=${NODE_ROLE}; scenario=${SCENARIO_ID}; peers=${ACTIVE_NODES}"
   gosu bitcoin bitcoind -datadir="$BITCOIN_DATADIR" -conf="$CONF" &
   BITCOIND_PID=$!
 }
@@ -330,7 +339,6 @@ verify_private_signet() {
     log "Unexpected network mode: chain=${chain:-missing}, challenge=${challenge:-missing}"
     return 1
   fi
-  log "Private Signet challenge ${SIGNET_CHALLENGE} is active"
 }
 
 wait_for_all_rpc() {
@@ -364,11 +372,9 @@ wait_for_peer_mesh() {
   if [[ "$expected" -eq 0 ]]; then
     return 0
   fi
-  log "Waiting for at least ${expected} private peer connection(s)"
   while (( $(date +%s) <= deadline )); do
     current=$(local_cli getconnectioncount 2>/dev/null || printf '0')
     if (( current >= expected )); then
-      log "Private peer mesh is ready with ${current} connection(s)"
       return 0
     fi
     sleep 0.5
@@ -380,7 +386,6 @@ wait_for_peer_mesh() {
 prepare_bootstrap_wallet() {
   BOOTSTRAP_WALLET=$(_default_wallet)
   create_wallet "$BOOTSTRAP_WALLET"
-  log "Bootstrap wallet is ${BOOTSTRAP_WALLET}"
 }
 
 wait_for_exact_bootstrap_height() {
@@ -403,17 +408,6 @@ wait_for_exact_bootstrap_height() {
   return 1
 }
 
-record_bootstrap_block() {
-  local height=$1
-  local block_hash=$2
-  local line
-
-  line=$(printf '%s [bootstrap] %s created initial block %s/%s hash=%s' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NODE_NAME" "$height" "$BOOTSTRAP_TARGET_HEIGHT" "$block_hash")
-  printf '%s\n' "$line" >> "$BOOTSTRAP_PROGRESS_FILE"
-  printf '%s\n' "$line" >&2
-}
-
 mine_bootstrap_share() {
   local previous_height=$((BOOTSTRAP_START_HEIGHT - 1))
   local height block_hash
@@ -422,14 +416,13 @@ mine_bootstrap_share() {
   wait_for_exact_bootstrap_height "$previous_height"
 
   for ((height = BOOTSTRAP_START_HEIGHT; height <= BOOTSTRAP_END_HEIGHT; height++)); do
-    block_hash=$(BITCOIN_ENV_MINE_LOG=0 mine_blocks 1 "$BOOTSTRAP_WALLET")
+    block_hash=$(mine_blocks 1 "$BOOTSTRAP_WALLET")
     block_hash=${block_hash//$'\n'/}
     if [[ ! "$block_hash" =~ ^[0-9a-f]{64}$ ]]; then
       log "Invalid block hash returned while generating initial block ${height}: ${block_hash:-missing}"
       return 1
     fi
     wait_for_exact_bootstrap_height "$height"
-    record_bootstrap_block "$height" "$block_hash"
   done
 
   wait_for_exact_bootstrap_height "$BOOTSTRAP_END_HEIGHT"
@@ -449,7 +442,7 @@ wait_for_txindex() {
 }
 
 verify_local_initial_state() {
-  local chain challenge initial_download
+  local chain challenge
 
   wait_for_exact_bootstrap_height "$BOOTSTRAP_TARGET_HEIGHT"
   wait_for_txindex
@@ -459,14 +452,10 @@ verify_local_initial_state() {
 
   chain=$(local_cli getblockchaininfo | jq -r '.chain // empty')
   challenge=$(local_cli getmininginfo | jq -r '.signet_challenge // empty')
-  initial_download=$(local_cli getblockchaininfo | jq -r '.initialblockdownload // true')
   if [[ "$chain" != "signet" || "$challenge" != "$SIGNET_CHALLENGE" ]]; then
     log "Local bootstrap verification failed: chain=${chain:-missing}, challenge=${challenge:-missing}"
     return 1
   fi
-
-  log "Local initial chain is ready: height=${BOOTSTRAP_TARGET_HEIGHT} tip=${INITIAL_TIP_HASH} initialblockdownload=${initial_download}"
-  log "The runner will compare this tip with every other selected node before releasing scenarios"
 }
 
 record_initial_state() {
@@ -479,13 +468,12 @@ MINED_FROM=${BOOTSTRAP_START_HEIGHT}
 MINED_TO=${BOOTSTRAP_END_HEIGHT}
 MINED_BLOCKS=${BOOTSTRAP_BLOCK_COUNT}
 WALLET=${BOOTSTRAP_WALLET}
-SOURCE_SHA256=${BITCOIN_SOURCE_SHA256}
+SOURCE_REPOSITORY=${BITCOIN_SOURCE_REPOSITORY}
 SOURCE_REVISION=${BITCOIN_SOURCE_REVISION}
+ARCHITECTURE=${BITCOIN_ARCHITECTURE}
+VERSION=${BITCOIN_COMPILED_VERSION}
 STATE
   touch "$RUN_DIR/initial-state.ready"
-  printf 'INITIAL_CHAIN_READY node=%s chain=signet height=%s tip=%s mined=%s-%s wallet=%s\n' \
-    "$NODE_NAME" "$BOOTSTRAP_TARGET_HEIGHT" "$INITIAL_TIP_HASH" \
-    "$BOOTSTRAP_START_HEIGHT" "$BOOTSTRAP_END_HEIGHT" "$BOOTSTRAP_WALLET"
 }
 
 wait_for_scenario_release() {
@@ -514,9 +502,9 @@ execute_scenario() {
   if [[ ! -f "$scenario_file" ]]; then
     log "Scenario file is missing: ${scenario_file}"
   else
-    export NODE_ID NODE_NAME NODE_ROLE SCENARIO_ID ACTIVE_NODES SCENARIO_START_EPOCH
+    export NODE_ID NODE_NAME NODE_ROLE SCENARIO_ID ACTIVE_NODES SCENARIO_START_EPOCH BITCOIND_PID
     export BITCOIN_DATADIR RPC_USER RPC_PASSWORD RPC_PORT P2P_PORT NETWORK_SUBNET
-    export BITCOIN_SOURCE_SHA256 BITCOIN_SOURCE_REVISION BITCOIN_COMPILED_VERSION
+    export BITCOIN_SOURCE_REPOSITORY BITCOIN_SOURCE_REVISION BITCOIN_ARCHITECTURE BITCOIN_COMPILED_VERSION
     log "Executing ${scenario_file}"
     set +e
     bash "$scenario_file"
@@ -543,7 +531,7 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
 
-  verify_binary_provenance
+  verify_binary_metadata
   detect_network_subnet
   configure_node
   start_bitcoin

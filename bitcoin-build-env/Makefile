@@ -1,7 +1,7 @@
 .PHONY: build clean
 
 build:
-	./run.sh
+	./build.sh
 
 clean:
-	rm -f bin/bitcoin-binaries.tar.gz bin/bitcoin-binaries.tar.gz.sha256
+	rm -f bin/bitcoin-binaries.tar.gz

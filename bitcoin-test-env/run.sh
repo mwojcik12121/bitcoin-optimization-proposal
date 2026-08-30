@@ -3,16 +3,14 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 cd "$ROOT_DIR"
+source "${ROOT_DIR}/controls/logging.sh"
 
 BINARY_ARCHIVE=${ROOT_DIR}/bin/bitcoin-binaries.tar.gz
-BINARY_CHECKSUM_FILE=${BINARY_ARCHIVE}.sha256
 CORE_IMAGE_OVERRIDE=${CORE_IMAGE:-}
 NODE_IMAGE_TAG_OVERRIDE=${NODE_IMAGE_TAG:-}
-BINARY_SHA256=
 BINARY_ARCHITECTURE=
 BINARY_VERSION=
 SOURCE_REPOSITORY=
-SOURCE_SHA256=
 SOURCE_REVISION=
 CORE_IMAGE=
 NODE_IMAGE_TAG=
@@ -31,15 +29,11 @@ CLEANUP_DONE=0
 LOGS_SAVED=0
 RUN_DATETIME=
 declare -A CONTAINER_IDS=()
-declare -A BOOTSTRAP_PROGRESS_LINES=()
 
-##
-# @brief Prints command usage.
-##
 usage() {
   cat <<USAGE
 Usage:
-  ./run.sh SCENARIO [options]
+  ./run.sh N [options]
   ./run.sh --list
 
 Options:
@@ -47,21 +41,13 @@ Options:
                           binary artifact without Docker cache.
   --rebuild-nodes         Rebuild selected node images without cache.
   --list                  List scenario numbers and selected nodes.
-  -h, --help              Show this help.
 USAGE
 }
 
-##
-# @brief Prints a timestamped runner message.
-# @param ... Message text.
-##
 log() {
-  printf '%s [runner] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+  test_log INFO runner "$*"
 }
 
-##
-# @brief Lists scenario numbers and the nodes selected by each.
-##
 list_scenarios() {
   local file base scenario node
   declare -A scenario_nodes=()
@@ -83,13 +69,6 @@ list_scenarios() {
   done < <(printf '%s\n' "${!scenario_nodes[@]}" | sort -n)
 }
 
-##
-# @brief Calculates one selected node's contiguous bootstrap block range.
-# @param $1 Target block count.
-# @param $2 Zero-based selected-node position.
-# @param $3 Selected-node count.
-# @return Prints start height, block count, and end height.
-##
 calculate_bootstrap_range() {
   local target=$1
   local position=$2
@@ -111,22 +90,11 @@ calculate_bootstrap_range() {
   printf '%d %d %d\n' "$start" "$count" "$end"
 }
 
-##
-# @brief Resolves and validates the binary artifact identity used by every node.
-# @return Zero when the artifact and its provenance are valid.
-##
-prepare_binary_identity() {
-  local archive_dir checksum_name short_sha members required
+prepare_binary_metadata() {
+  local members required
 
-  if [[ ! -f "$BINARY_ARCHIVE" || ! -f "$BINARY_CHECKSUM_FILE" ]]; then
-    printf 'Copy bitcoin-binaries.tar.gz and bitcoin-binaries.tar.gz.sha256 into bin/.\n' >&2
-    return 1
-  fi
-
-  archive_dir=$(dirname "$BINARY_ARCHIVE")
-  checksum_name=$(basename "$BINARY_CHECKSUM_FILE")
-  if ! (cd "$archive_dir" && sha256sum --check --strict --status "$checksum_name"); then
-    printf 'Binary artifact checksum validation failed.\n' >&2
+  if [[ ! -f "$BINARY_ARCHIVE" ]]; then
+    printf 'Copy bitcoin-binaries.tar.gz into bin/.\n' >&2
     return 1
   fi
 
@@ -136,7 +104,6 @@ prepare_binary_identity() {
     return 1
   fi
   for required in \
-    checksums.sha256 \
     usr/local/bin/bitcoin \
     usr/local/bin/bitcoind \
     usr/local/bin/bitcoin-cli \
@@ -145,7 +112,6 @@ prepare_binary_identity() {
     usr/local/bin/bitcoin-wallet \
     opt/bitcoin/COPYING \
     opt/bitcoin/SOURCE_REPOSITORY \
-    opt/bitcoin/SOURCE_SHA256 \
     opt/bitcoin/SOURCE_REVISION \
     opt/bitcoin/ARCHITECTURE \
     opt/bitcoin/VERSION; do
@@ -155,67 +121,51 @@ prepare_binary_identity() {
     fi
   done
 
-  BINARY_SHA256=$(sha256sum "$BINARY_ARCHIVE" | awk '{print $1}')
   SOURCE_REPOSITORY=$(tar -xOf "$BINARY_ARCHIVE" opt/bitcoin/SOURCE_REPOSITORY | tr -d '[:space:]')
-  SOURCE_SHA256=$(tar -xOf "$BINARY_ARCHIVE" opt/bitcoin/SOURCE_SHA256 | tr -d '[:space:]')
   SOURCE_REVISION=$(tar -xOf "$BINARY_ARCHIVE" opt/bitcoin/SOURCE_REVISION | tr -d '[:space:]')
   BINARY_ARCHITECTURE=$(tar -xOf "$BINARY_ARCHIVE" opt/bitcoin/ARCHITECTURE | tr -d '[:space:]')
   BINARY_VERSION=$(tar -xOf "$BINARY_ARCHIVE" opt/bitcoin/VERSION | head -n 1)
 
-  if [[ ! "$BINARY_SHA256" =~ ^[0-9a-f]{64}$ \
-        || ! "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ \
-        || ! "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ \
+  if [[ ! "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ \
         || "$SOURCE_REPOSITORY" == "." \
         || "$SOURCE_REPOSITORY" == ".." \
         || -z "$SOURCE_REVISION" \
         || ! "$BINARY_ARCHITECTURE" =~ ^(amd64|arm64)$ \
         || -z "$BINARY_VERSION" ]]; then
-    printf 'Binary artifact provenance is invalid.\n' >&2
+    printf 'Binary artifact metadata is invalid.\n' >&2
     return 1
   fi
 
-  short_sha=${BINARY_SHA256:0:16}
-  CORE_IMAGE=${CORE_IMAGE_OVERRIDE:-bitcoin-env/core-source:${short_sha}}
-  NODE_IMAGE_TAG=${NODE_IMAGE_TAG_OVERRIDE:-source-${short_sha}}
+  CORE_IMAGE=${CORE_IMAGE_OVERRIDE:-bitcoin-env/core-source:local}
+  NODE_IMAGE_TAG=${NODE_IMAGE_TAG_OVERRIDE:-source-local}
 }
 
-##
-# @brief Verifies that the runtime core image contains the supplied binaries.
-# @return Zero when binary provenance and executable checks pass without networking.
-##
 verify_core_image_binaries() {
   docker run --rm --network none \
-    --env "EXPECTED_BINARY_SHA256=${BINARY_SHA256}" \
-    --env "EXPECTED_SOURCE_SHA256=${SOURCE_SHA256}" \
+    --env "EXPECTED_SOURCE_REPOSITORY=${SOURCE_REPOSITORY}" \
     --env "EXPECTED_SOURCE_REVISION=${SOURCE_REVISION}" \
     --env "EXPECTED_ARCHITECTURE=${BINARY_ARCHITECTURE}" \
+    --env "EXPECTED_VERSION=${BINARY_VERSION}" \
     --entrypoint /bin/bash \
     "$CORE_IMAGE" -Eeuo pipefail -c '
       for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do
         command -v "$binary" >/dev/null
       done
-      test "$BITCOIN_BINARY_SHA256" = "$EXPECTED_BINARY_SHA256"
-      test "$BITCOIN_SOURCE_SHA256" = "$EXPECTED_SOURCE_SHA256"
+      test "$BITCOIN_SOURCE_REPOSITORY" = "$EXPECTED_SOURCE_REPOSITORY"
       test "$BITCOIN_SOURCE_REVISION" = "$EXPECTED_SOURCE_REVISION"
       test "$BITCOIN_ARCHITECTURE" = "$EXPECTED_ARCHITECTURE"
-      test "$(cat /opt/bitcoin/BINARY_ARCHIVE_SHA256)" = "$EXPECTED_BINARY_SHA256"
-      test "$(cat /opt/bitcoin/SOURCE_SHA256)" = "$EXPECTED_SOURCE_SHA256"
+      test "$(cat /opt/bitcoin/SOURCE_REPOSITORY)" = "$EXPECTED_SOURCE_REPOSITORY"
       test "$(cat /opt/bitcoin/SOURCE_REVISION)" = "$EXPECTED_SOURCE_REVISION"
       test "$(cat /opt/bitcoin/ARCHITECTURE)" = "$EXPECTED_ARCHITECTURE"
+      test "$(head -n 1 /opt/bitcoin/VERSION)" = "$EXPECTED_VERSION"
+      test "$(bitcoind --version | head -n 1)" = "$EXPECTED_VERSION"
     '
 }
 
-##
-# @brief Runs Docker Compose with the selected project and files.
-# @param ... Docker Compose arguments.
-##
 compose() {
   docker compose --project-name "$PROJECT_NAME" "${COMPOSE_FILES[@]}" "$@"
 }
 
-##
-# @brief Stops every selected container while preserving it for log collection.
-##
 stop_selected_containers() {
   local service cid
   local -a container_ids=()
@@ -235,9 +185,6 @@ stop_selected_containers() {
   fi
 }
 
-##
-# @brief Exports each selected container's complete stdout and stderr to logs/.
-##
 save_node_logs() {
   local service cid output_file
 
@@ -265,10 +212,6 @@ save_node_logs() {
   done
 }
 
-##
-# @brief Removes containers, transient tmpfs state, and the scenario network.
-# @return Exits with the status active when cleanup began.
-##
 cleanup() {
   local exit_status=$?
   if [[ "$CLEANUP_DONE" -eq 1 ]]; then
@@ -286,11 +229,6 @@ cleanup() {
   exit "$exit_status"
 }
 
-##
-# @brief Checks whether a file exists inside a running container.
-# @param $1 Container ID.
-# @param $2 Absolute container path.
-##
 container_file_exists() {
   local cid=$1
   local path=$2
@@ -300,11 +238,6 @@ container_file_exists() {
   docker cp "${cid}:${path}" - 2>/dev/null | tar -tf - >/dev/null 2>&1
 }
 
-##
-# @brief Reads a file from a running container.
-# @param $1 Container ID.
-# @param $2 Absolute container path.
-##
 container_file_read() {
   local cid=$1
   local path=$2
@@ -314,11 +247,6 @@ container_file_read() {
   docker cp "${cid}:${path}" - 2>/dev/null | tar -xOf - 2>/dev/null
 }
 
-##
-# @brief Reads one value from a KEY=value state file in a container.
-# @param $1 Container ID.
-# @param $2 Key name.
-##
 container_state_value() {
   local cid=$1
   local key=$2
@@ -326,38 +254,6 @@ container_state_value() {
     | awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); print; exit}'
 }
 
-##
-# @brief Prints bootstrap progress lines that have not yet been shown by the runner.
-# @param $1 Service name.
-# @param $2 Container ID.
-##
-print_bootstrap_progress() {
-  local service=$1
-  local cid=$2
-  local progress_file=/run/bitcoin-env/bootstrap-progress.log
-  local content current_count printed_count start_line
-
-  if ! container_file_exists "$cid" "$progress_file"; then
-    return 0
-  fi
-
-  content=$(container_file_read "$cid" "$progress_file" 2>/dev/null || true)
-  current_count=$(printf '%s\n' "$content" | awk 'NF {count++} END {print count + 0}')
-  printed_count=${BOOTSTRAP_PROGRESS_LINES[$service]:-0}
-  if (( current_count <= printed_count )); then
-    return 0
-  fi
-
-  start_line=$((printed_count + 1))
-  printf '%s\n' "$content" | awk -v start="$start_line" 'NF {line++; if (line >= start) print}'
-  BOOTSTRAP_PROGRESS_LINES[$service]=$current_count
-}
-
-##
-# @brief Writes the shared scenario start epoch into a container.
-# @param $1 Container ID.
-# @param $2 Unix epoch.
-##
 release_container_scenario() {
   local cid=$1
   local epoch=$2
@@ -426,25 +322,21 @@ done
 mapfile -t SERVICES < <(printf '%s\n' "${SERVICES[@]}" | sort -u)
 ACTIVE_NODES=$(IFS=,; printf '%s' "${SERVICES[*]}")
 
-for command_name in docker tar awk sort sha256sum grep dirname basename; do
+for command_name in docker tar awk sort grep dirname basename head tr; do
   command -v "$command_name" >/dev/null 2>&1 || { printf '%s is required.\n' "$command_name" >&2; exit 4; }
 done
 docker compose version >/dev/null 2>&1 || { printf 'Docker Compose v2 is required.\n' >&2; exit 4; }
 docker info >/dev/null 2>&1 || { printf 'Docker Engine is not reachable.\n' >&2; exit 4; }
-prepare_binary_identity
+prepare_binary_metadata
 
 PROJECT_NAME="bitcoin-env-s${SCENARIO_ID}-$$-${RANDOM}"
 export CORE_IMAGE NODE_IMAGE_TAG SCENARIO_ID ACTIVE_NODES
 export BOOTSTRAP_TARGET_HEIGHT BOOTSTRAP_TIMEOUT_SECONDS
-export BITCOIN_SOURCE_REPOSITORY="$SOURCE_REPOSITORY"
-export BITCOIN_SOURCE_SHA256="$SOURCE_SHA256"
-export BITCOIN_SOURCE_REVISION="$SOURCE_REVISION"
-export BITCOIN_BINARY_SHA256="$BINARY_SHA256"
-export BITCOIN_ARCHITECTURE="$BINARY_ARCHITECTURE"
 
 log "Using ${RESOURCE_PROFILE}"
-log "Using bin/bitcoin-binaries.tar.gz; archive SHA-256: ${BINARY_SHA256}"
-log "Compiled source: ${SOURCE_REPOSITORY}; source SHA-256: ${SOURCE_SHA256}; revision: ${SOURCE_REVISION}"
+log "Using bin/bitcoin-binaries.tar.gz"
+log "Compiled source: ${SOURCE_REPOSITORY}; revision: ${SOURCE_REVISION}; architecture: ${BINARY_ARCHITECTURE}"
+log "Compiled binary version: ${BINARY_VERSION}"
 log "Scenario ${SCENARIO_ID} selects only: ${ACTIVE_NODES}"
 log "Every selected node starts empty and mines one sequential share of heights 1-${BOOTSTRAP_TARGET_HEIGHT}"
 compose config --quiet
@@ -455,9 +347,7 @@ core_build=(
   --file docker/Dockerfile.core
   --tag "$CORE_IMAGE"
   --build-arg "BITCOIN_SOURCE_REPOSITORY=${SOURCE_REPOSITORY}"
-  --build-arg "BITCOIN_SOURCE_SHA256=${SOURCE_SHA256}"
   --build-arg "BITCOIN_SOURCE_REVISION=${SOURCE_REVISION}"
-  --build-arg "BITCOIN_BINARY_SHA256=${BINARY_SHA256}"
   --build-arg "BITCOIN_ARCHITECTURE=${BINARY_ARCHITECTURE}"
 )
 if [[ "$REBUILD_CORE" -eq 1 ]]; then
@@ -474,7 +364,7 @@ else
   compose build "${SERVICES[@]}"
 fi
 
-RUN_DATETIME=$(date -u +%Y%m%dT%H%M%SZ)
+RUN_DATETIME=$(date +%Y%m%d_%H%M%S)
 mkdir -p "$ROOT_DIR/logs"
 log "Launching selected nodes on the internal-only Docker network"
 compose up --detach --no-build --remove-orphans "${SERVICES[@]}"
@@ -487,7 +377,6 @@ for service in "${SERVICES[@]}"; do
     exit 5
   fi
   CONTAINER_IDS[$service]=$cid
-  BOOTSTRAP_PROGRESS_LINES[$service]=0
 done
 
 expected_memory=3221225472
@@ -523,14 +412,13 @@ for service in "${SERVICES[@]}"; do
   fi
 done
 
-log "Generating the first ${BOOTSTRAP_TARGET_HEIGHT} blocks; one progress line will be printed for every block"
+log "Generating the first ${BOOTSTRAP_TARGET_HEIGHT} blocks across the selected nodes"
 bootstrap_deadline=$(( $(date +%s) + BOOTSTRAP_TIMEOUT_SECONDS ))
 last_ready=-1
 while :; do
   ready=0
   for service in "${SERVICES[@]}"; do
     cid=${CONTAINER_IDS[$service]}
-    print_bootstrap_progress "$service" "$cid"
     if container_file_exists "$cid" /run/bitcoin-env/initial-state.ready; then
       ready=$((ready + 1))
       continue
@@ -555,13 +443,8 @@ while :; do
   sleep 0.25
 done
 
-for service in "${SERVICES[@]}"; do
-  print_bootstrap_progress "$service" "${CONTAINER_IDS[$service]}"
-done
 
 reference_hash=
-reference_source_sha256=
-reference_source_revision=
 printf '\n===== Initial 200-block state reached =====\n'
 printf 'chain:       private custom Signet\n'
 printf 'height:      %s\n' "$BOOTSTRAP_TARGET_HEIGHT"
@@ -580,32 +463,26 @@ for index in "${!SERVICES[@]}"; do
   mined_to=$(container_state_value "$cid" MINED_TO)
   mined_blocks=$(container_state_value "$cid" MINED_BLOCKS)
   wallet=$(container_state_value "$cid" WALLET)
-  source_sha256=$(container_state_value "$cid" SOURCE_SHA256)
+  source_repository=$(container_state_value "$cid" SOURCE_REPOSITORY)
   source_revision=$(container_state_value "$cid" SOURCE_REVISION)
+  architecture=$(container_state_value "$cid" ARCHITECTURE)
+  version=$(container_state_value "$cid" VERSION)
   read -r expected_from expected_count expected_to \
     < <(calculate_bootstrap_range "$BOOTSTRAP_TARGET_HEIGHT" "$index" "${#SERVICES[@]}")
 
   if [[ "$chain" != "signet" || "$height" != "$BOOTSTRAP_TARGET_HEIGHT" || ! "$hash" =~ ^[0-9a-f]{64}$ ]]; then
-    log "${service} reported an invalid initial-chain network, height, or hash"
+    log "${service} reported an invalid initial-chain network, height, or block hash"
     exit 7
   fi
   if [[ "$active_node_count" != "${#SERVICES[@]}" || -z "$wallet" ]]; then
     log "${service} reported invalid initial-chain participation metadata"
     exit 7
   fi
-  if [[ ! "$source_sha256" =~ ^[0-9a-f]{64}$ || -z "$source_revision" ]]; then
-    log "${service} reported invalid compiled-source metadata"
-    exit 7
-  fi
-  if [[ -z "$reference_source_sha256" ]]; then
-    reference_source_sha256=$source_sha256
-    reference_source_revision=$source_revision
-  elif [[ "$source_sha256" != "$reference_source_sha256" || "$source_revision" != "$reference_source_revision" ]]; then
-    log "Selected nodes do not use the same compiled source build"
-    exit 7
-  fi
-  if [[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ && "$source_sha256" != "$SOURCE_SHA256" ]]; then
-    log "${service} source identity does not match the supplied binary artifact"
+  if [[ "$source_repository" != "$SOURCE_REPOSITORY" \
+        || "$source_revision" != "$SOURCE_REVISION" \
+        || "$architecture" != "$BINARY_ARCHITECTURE" \
+        || "$version" != "$BINARY_VERSION" ]]; then
+    log "${service} reported compiled-binary metadata that differs from the supplied artifact"
     exit 7
   fi
   if [[ "$mined_from" != "$expected_from" || "$mined_to" != "$expected_to" || "$mined_blocks" != "$expected_count" ]]; then
@@ -618,13 +495,15 @@ for index in "${!SERVICES[@]}"; do
     log "Selected nodes do not agree on the height-${BOOTSTRAP_TARGET_HEIGHT} block hash"
     exit 7
   fi
-  printf '  %-6s heights %3s-%-3s  blocks=%-3s wallet=%s\n' "$service" "$mined_from" "$mined_to" "$mined_blocks" "$wallet"
+  printf '  %-6s heights %3s-%-3s  blocks=%-3s wallet=%s\n' \
+    "$service" "$mined_from" "$mined_to" "$mined_blocks" "$wallet"
 done
-printf 'tip hash:    %s\n' "$reference_hash"
-printf 'binaries:    supplied by build environment (%s)\n' "$SOURCE_REPOSITORY"
-printf 'source hash: %s\n' "$reference_source_sha256"
-printf 'revision:    %s\n' "$reference_source_revision"
-printf 'status:      initial 200-block state reached on all selected nodes\n'
+printf 'tip hash:     %s\n' "$reference_hash"
+printf 'binaries:     supplied by build environment (%s)\n' "$SOURCE_REPOSITORY"
+printf 'revision:     %s\n' "$SOURCE_REVISION"
+printf 'architecture: %s\n' "$BINARY_ARCHITECTURE"
+printf 'version:      %s\n' "$BINARY_VERSION"
+printf 'status:       initial 200-block state reached on all selected nodes\n'
 printf '=============================================\n'
 printf 'INITIAL_200_BLOCK_STATE_REACHED chain=signet height=%s tip=%s nodes=%s\n\n' \
   "$BOOTSTRAP_TARGET_HEIGHT" "$reference_hash" "$ACTIVE_NODES"

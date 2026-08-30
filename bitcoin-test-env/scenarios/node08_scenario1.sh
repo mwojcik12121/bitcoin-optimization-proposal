@@ -3,13 +3,12 @@ set -Eeuo pipefail
 source /controls/actions.sh
 source /controls/info.sh
 source /controls/network.sh
+source /controls/process.sh
 
 assert_initial_state
 wait_for_peer_count 7 180
-log_peer_connections "full-mesh"
 
-# This validator remains slower for the entire scenario through fixed egress latency.
-network_delay 1250
+network_impair 1250 300 5 4mbit
 wait_until_epoch "$SCENARIO_START_EPOCH"
 
 PARTITION_HEAL_EPOCH=$((SCENARIO_START_EPOCH + 40))
@@ -19,14 +18,27 @@ FINAL_HEIGHT=213
 
 network_partition_group node01 node03 node06 node07
 sleep 2
-log_peer_connections "partitioned"
+
+(
+  wait_until_epoch $((SCENARIO_START_EPOCH + 7))
+  network_flap_peer node02 3 2 1
+  wait_until_epoch $((SCENARIO_START_EPOCH + 23))
+  network_pause 4
+  wait_until_epoch $((SCENARIO_START_EPOCH + 32))
+  network_set_active false >/dev/null
+  suspend_node_for 2
+  network_set_active true >/dev/null
+) &
+network_interruptions_pid=$!
+
 wait_for_exact_height "$LOSING_BRANCH_HEIGHT" 120
 losing_tip=$(bitcoin_rpc getbestblockhash)
 
 wait_until_epoch "$PARTITION_HEAL_EPOCH"
+wait "$network_interruptions_pid"
+network_clear_impairment
 network_heal_group node01 node03 node06 node07
 wait_for_peer_count 7 180
-log_peer_connections "healed"
 wait_for_same_tip node01 180
 
 wait_until_epoch "$TRANSACTION_END_EPOCH"

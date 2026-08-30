@@ -6,9 +6,7 @@ source /controls/network.sh
 
 assert_initial_state
 wait_for_peer_count 7 180
-log_peer_connections "full-mesh"
 
-# This miner remains slower for the entire scenario through fixed egress latency.
 network_delay 750
 wait_until_epoch "$SCENARIO_START_EPOCH"
 
@@ -19,9 +17,7 @@ FINAL_HEIGHT=213
 
 network_partition_group node02 node04 node05 node08
 sleep 2
-log_peer_connections "partitioned"
 
-# Permanently slower miner on partition A: one block every six to seven seconds.
 mine_blocks_at_offsets \
   "$SCENARIO_START_EPOCH" "12,19,25,31,37" wallet-node03 >/dev/null
 
@@ -29,9 +25,9 @@ wait_for_exact_height "$WINNING_BRANCH_HEIGHT" 120
 winning_tip=$(bitcoin_rpc getbestblockhash)
 
 wait_until_epoch "$PARTITION_HEAL_EPOCH"
+network_clear_impairment
 network_heal_group node02 node04 node05 node08
 wait_for_peer_count 7 180
-log_peer_connections "healed"
 wait_for_same_tip node01 180
 
 wait_until_epoch "$TRANSACTION_END_EPOCH"

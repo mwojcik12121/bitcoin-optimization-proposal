@@ -5,16 +5,16 @@
 *.tar
 *.tar.gz
 
-sources/*/build
-sources/*/build-*
-sources/*/cmake-build-*
-sources/*/depends/built
-sources/*/depends/work
-sources/*/depends/sources
-sources/**/*.o
-sources/**/*.a
-sources/**/*.so
-sources/**/*.dylib
-sources/**/*.dll
+src/*/build
+src/*/build-*
+src/*/cmake-build-*
+src/*/depends/built
+src/*/depends/work
+src/*/depends/sources
+src/**/*.o
+src/**/*.a
+src/**/*.so
+src/**/*.dylib
+src/**/*.dll
 
 bin/

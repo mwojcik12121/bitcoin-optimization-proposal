@@ -8,10 +8,6 @@ RPC_PASSWORD=${RPC_PASSWORD:-bitcoinenv-internal-only}
 RPC_PORT=${RPC_PORT:-38332}
 P2P_PORT=${P2P_PORT:-38333}
 
-_block_log() {
-  printf '%s [%s][block-generation] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NODE_NAME" "$*" >&2
-}
-
 _btc() {
   bitcoin-cli \
     -datadir="$BITCOIN_DATADIR" \
@@ -255,27 +251,15 @@ prioritise_transaction() {
 
 _mine_one_to_address() {
   local address=$1
-  local wallet=$2
-  local hash_result block_hash block_header block_height parent_hash local_tip selected_as_tip=false
+  local hash_result block_hash
 
   hash_result=$(_btc generatetoaddress 1 "$address" 100000000)
   block_hash=$(jq -r 'if type == "array" and length == 1 then .[0] else empty end' <<<"$hash_result")
   if [[ ! "$block_hash" =~ ^[0-9a-f]{64}$ ]]; then
-    _block_log "generation failed: Bitcoin Core returned no valid block hash"
+    printf 'Bitcoin Core returned no valid block hash.\n' >&2
     return 1
   fi
 
-  block_header=$(_btc getblockheader "$block_hash" true)
-  block_height=$(jq -r '.height // -1' <<<"$block_header")
-  parent_hash=$(jq -r '.previousblockhash // "genesis"' <<<"$block_header")
-  local_tip=$(_btc getbestblockhash)
-  if [[ "$local_tip" == "$block_hash" ]]; then
-    selected_as_tip=true
-  fi
-
-  if [[ "${BITCOIN_ENV_MINE_LOG:-1}" != "0" ]]; then
-    _block_log "mined block height=${block_height} hash=${block_hash} parent=${parent_hash} selected_as_local_tip=${selected_as_tip} local_tip=${local_tip} wallet=${wallet}"
-  fi
   printf '%s\n' "$block_hash"
 }
 
@@ -285,7 +269,7 @@ mine_blocks() {
   local address block_hash index
 
   if [[ ! "$count" =~ ^[0-9]+$ ]]; then
-    _block_log "generation failed: block count must be a non-negative integer: ${count}"
+    printf 'Block count must be a non-negative integer: %s\n' "$count" >&2
     return 2
   fi
   if [[ "$count" == "0" ]]; then
@@ -296,7 +280,7 @@ mine_blocks() {
   create_wallet "$wallet"
   address=$(new_address "$wallet" "mining-${NODE_NAME}")
   for ((index = 1; index <= count; index++)); do
-    block_hash=$(_mine_one_to_address "$address" "$wallet")
+    block_hash=$(_mine_one_to_address "$address")
   done
   printf '%s\n' "$block_hash"
 }
@@ -316,7 +300,7 @@ mine_blocks_until_epoch() {
   address=$(new_address "$wallet" "scenario-mining-${NODE_NAME}")
   sleep "$initial_delay"
   while (( $(date +%s) < end_epoch )); do
-    _mine_one_to_address "$address" "$wallet" >/dev/null
+    _mine_one_to_address "$address" >/dev/null
     sleep "$interval_seconds"
   done
 }
@@ -344,7 +328,7 @@ mine_blocks_at_offsets() {
       (( now >= target_epoch )) && break
       sleep 0.2
     done
-    block_hash=$(_mine_one_to_address "$address" "$wallet")
+    block_hash=$(_mine_one_to_address "$address")
   done
   printf '%s\n' "$block_hash"
 }

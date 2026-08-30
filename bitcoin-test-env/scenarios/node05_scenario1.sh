@@ -6,7 +6,6 @@ source /controls/network.sh
 
 assert_initial_state
 wait_for_peer_count 7 180
-log_peer_connections "full-mesh"
 wait_until_epoch "$SCENARIO_START_EPOCH"
 
 PARTITION_HEAL_EPOCH=$((SCENARIO_START_EPOCH + 40))
@@ -20,14 +19,12 @@ transaction_pid=$!
 
 network_partition_group node01 node03 node06 node07
 sleep 2
-log_peer_connections "partitioned"
 wait_for_exact_height "$LOSING_BRANCH_HEIGHT" 120
 losing_tip=$(bitcoin_rpc getbestblockhash)
 
 wait_until_epoch "$PARTITION_HEAL_EPOCH"
 network_heal_group node01 node03 node06 node07
 wait_for_peer_count 7 180
-log_peer_connections "healed"
 wait_for_same_tip node01 180
 
 wait "$transaction_pid"

@@ -91,45 +91,6 @@ show_peer_state() {
   _info_btc getpeerinfo | jq 'map({id, addr, addrbind, network, servicesnames, relaytxes, lastsend, lastrecv, bytessent, bytesrecv, conntime, pingtime, minping, synced_headers, synced_blocks, inflight, connection_type, permissions})'
 }
 
-log_peer_connections() {
-  local stage=${1:-current}
-  local node ip peer_json row address inbound connection_type peer_ip peer_name direction
-  local -a nodes=() peer_rows=()
-  declare -A node_by_ip=()
-
-  IFS=',' read -r -a nodes <<< "$ACTIVE_NODES"
-  for node in "${nodes[@]}"; do
-    [[ "$node" =~ ^node0[1-8]$ ]] || continue
-    while IFS= read -r ip; do
-      [[ -n "$ip" ]] && node_by_ip["$ip"]=$node
-    done < <(getent ahostsv4 "$node" 2>/dev/null | awk '{print $1}' | sort -u)
-  done
-
-  peer_json=$(_info_btc getpeerinfo)
-  mapfile -t peer_rows < <(
-    jq -r \
-      '.[] | [(.addr // ""), ((.inbound // false) | tostring), (.connection_type // "unknown")] | @tsv' \
-      <<< "$peer_json" | sort -u
-  )
-
-  if [[ ${#peer_rows[@]} -eq 0 ]]; then
-    printf '%s [%s][peers] stage=%s connected_to=none\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NODE_NAME" "$stage" >&2
-    return 0
-  fi
-
-  for row in "${peer_rows[@]}"; do
-    IFS=$'\t' read -r address inbound connection_type <<< "$row"
-    peer_ip=${address%:*}
-    peer_name=${node_by_ip[$peer_ip]:-$peer_ip}
-    direction=outbound
-    [[ "$inbound" == "true" ]] && direction=inbound
-    printf '%s [%s][peers] stage=%s connected_to=%s address=%s direction=%s type=%s\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NODE_NAME" "$stage" \
-      "$peer_name" "$address" "$direction" "$connection_type" >&2
-  done
-}
-
 show_network_state() {
   _info_btc getnetworkinfo | jq '{version, subversion, protocolversion, localservicesnames, localrelay, timeoffset, networkactive, connections, connections_in, connections_out, networks, relayfee, incrementalfee, warnings}'
 }

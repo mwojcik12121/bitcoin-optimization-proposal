@@ -578,6 +578,10 @@ private:
                                                    int64_t now) const
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+    /** Log the locally calculated score after processing a peer-quality observation. */
+    void LogRelayScore(NodeId peer_id, const char* trigger, int64_t now) const
+        EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
     void RecordCandidateAnnouncement(NodeId peer_id, const CBlockIndex& block_index)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
@@ -2266,6 +2270,12 @@ void PeerManagerImpl::BlockChecked(const std::shared_ptr<const CBlock>& block, c
     const int64_t now{count_seconds(GetTime<std::chrono::seconds>())};
     const uint256 hash{block->GetHash()};
     const auto source_it{mapBlockSource.find(hash)};
+    std::vector<NodeId> quality_updated_peers;
+    const auto mark_quality_updated{[&](const NodeId peer_id) {
+        if (std::find(quality_updated_peers.begin(), quality_updated_peers.end(), peer_id) == quality_updated_peers.end()) {
+            quality_updated_peers.push_back(peer_id);
+        }
+    }};
 
     if (state.IsInvalid()) {
         // Only a peer that supplied the complete block body receives an invalid-body
@@ -2276,6 +2286,7 @@ void PeerManagerImpl::BlockChecked(const std::shared_ptr<const CBlock>& block, c
                 if (source_it->second.was_requested) {
                     node_state->m_relay_quality.ObserveRequestedBlockResult(false, now);
                 }
+                mark_quality_updated(source_it->second.peer_id);
             }
         }
     } else if (state.IsValid()) {
@@ -2284,6 +2295,7 @@ void PeerManagerImpl::BlockChecked(const std::shared_ptr<const CBlock>& block, c
             for (const NodeId peer_id : announcers_it->second) {
                 if (CNodeState* node_state{State(peer_id)}) {
                     node_state->m_relay_quality.ObserveValidatedAnnouncement(now);
+                    mark_quality_updated(peer_id);
                 }
             }
         }
@@ -2300,8 +2312,13 @@ void PeerManagerImpl::BlockChecked(const std::shared_ptr<const CBlock>& block, c
                     node_state->m_relay_quality.ObserveCompactBlockResult(
                         *source_it->second.compact_outcome, now);
                 }
+                mark_quality_updated(source_it->second.peer_id);
             }
         }
+    }
+
+    for (const NodeId peer_id : quality_updated_peers) {
+        LogRelayScore(peer_id, state.IsInvalid() ? "invalid_block" : "validated_block", now);
     }
 
     // If the block failed validation, we know where it came from and we're still connected
@@ -5520,6 +5537,41 @@ node::RelayScoreContext PeerManagerImpl::BuildRelayScoreContext(const CNode& pee
     return context;
 }
 
+void PeerManagerImpl::LogRelayScore(const NodeId peer_id, const char* trigger, const int64_t now) const
+{
+    AssertLockHeld(cs_main);
+    if (!util::log::ShouldLog(BCLog::NET, BCLog::Level::Debug)) return;
+
+    const CNodeState* state{State(peer_id)};
+    const CBlockIndex* tip{m_chainman.ActiveChain().Tip()};
+    if (state == nullptr || tip == nullptr) return;
+
+    m_connman.ForNode(peer_id, [&](CNode* peer_node) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
+        AssertLockHeld(::cs_main);
+        const auto context{BuildRelayScoreContext(*peer_node, *state, *tip, now)};
+        const auto score{state->m_relay_quality.ScoreBreakdown(context, now)};
+        const int64_t connected_seconds{
+            std::max<int64_t>(0, now - count_seconds(peer_node->m_connected))};
+        const bool score_ready{
+            state->m_relay_quality.HasEnoughEvidence(now, connected_seconds)};
+        const char* score_status{score_ready ? "eligible" : "provisional"};
+        const std::string local_address{
+            fLogIPs ? strprintf(" localaddr=%s", peer_node->addrBind.ToStringAddrPort()) : ""};
+
+        // Scores are derived from local observations; peers do not send a score
+        // over the wire. Name both sides so multi-node test logs stay unambiguous.
+        LogDebug(BCLog::NET, "peer scoring update: scorer=local%s scored_peer=%d%s trigger=%s status=%s connected_seconds=%d effective_observations=%.6f total=%.6f parameters={validated_announcements=%.6f requested_block_success=%.6f compact_block_quality=%.6f chain_freshness=%.6f availability=%.6f latency=%.6f stall_rate=%.6f invalid_block_rate=%.6f}\n",
+                 local_address, peer_id, peer_node->LogIP(fLogIPs), trigger,
+                 score_status, connected_seconds,
+                 state->m_relay_quality.EffectiveObservations(now), score.total,
+                 score.validated_announcements, score.requested_block_success,
+                 score.compact_block_quality, score.chain_freshness,
+                 score.availability, score.latency, score.stall_rate,
+                 score.invalid_block_rate);
+        return true;
+    });
+}
+
 void PeerManagerImpl::EvictExtraOutboundPeers(std::chrono::seconds now)
 {
     // If we have any extra block-relay-only peers, disconnect the youngest unless
@@ -6410,9 +6462,11 @@ bool PeerManagerImpl::SendMessages(CNode& node)
                 if (staller_state.m_stalling_since == 0us) {
                     staller_state.m_stalling_since = current_time;
                     if (!staller_state.m_quality_stall_recorded) {
-                        staller_state.m_relay_quality.ObserveRequestedBlockResult(
-                            false, count_seconds(GetTime<std::chrono::seconds>()));
+                        const int64_t score_time{
+                            count_seconds(GetTime<std::chrono::seconds>())};
+                        staller_state.m_relay_quality.ObserveRequestedBlockResult(false, score_time);
                         staller_state.m_quality_stall_recorded = true;
+                        LogRelayScore(staller, "block_download_stall", score_time);
                     }
                     LogDebug(BCLog::NET, "Stall started peer=%d\n", staller);
                 }

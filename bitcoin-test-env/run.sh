@@ -14,7 +14,11 @@ SOURCE_REPOSITORY=
 SOURCE_REVISION=
 CORE_IMAGE=
 NODE_IMAGE_TAG=
-TIMEOUT_SECONDS=600
+SCENARIO_DURATION_SECONDS=${SCENARIO_DURATION_SECONDS:-180}
+SCENARIO_WARMUP_SECONDS=${SCENARIO_WARMUP_SECONDS:-20}
+SCENARIO_PREPARATION_TIMEOUT_SECONDS=180
+SCENARIO_TIMEOUT_MARGIN_SECONDS=300
+TIMEOUT_SECONDS=0
 BOOTSTRAP_TIMEOUT_SECONDS=900
 BOOTSTRAP_TARGET_HEIGHT=200
 REBUILD_CORE=0
@@ -247,6 +251,55 @@ container_file_read() {
   docker cp "${cid}:${path}" - 2>/dev/null | tar -xOf - 2>/dev/null
 }
 
+container_logs_contain() {
+  local cid=$1
+  local marker=$2
+
+  docker logs "$cid" 2>&1 \
+    | awk -v marker="$marker" 'index($0, marker) { found = 1 } END { exit(found ? 0 : 1) }'
+}
+
+container_logs_contain_at_least() {
+  local cid=$1
+  local marker=$2
+  local minimum=$3
+
+  docker logs "$cid" 2>&1 \
+    | awk -v marker="$marker" -v minimum="$minimum" \
+        'index($0, marker) { count++ } END { exit(count >= minimum ? 0 : 1) }'
+}
+
+invalid_scores_are_persistent() {
+  local cid=$1
+  local expected_ip=$2
+  local minimum=$3
+
+  docker logs "$cid" 2>&1 \
+    | awk -v expected_ip="$expected_ip" -v minimum="$minimum" '
+        index($0, "peer scoring update:") && index($0, "trigger=invalid_block") {
+          total++
+          peer_id = ""
+          source_matches = 0
+          for (field = 1; field <= NF; field++) {
+            if ($field ~ /^scored_peer=/) {
+              split($field, value, "=")
+              peer_id = value[2]
+            }
+            if (index($field, "peeraddr=" expected_ip ":") == 1) {
+              source_matches = 1
+            }
+          }
+          if (peer_id != "" && source_matches) {
+            matched++
+            peer_ids[peer_id] = 1
+          }
+        }
+        END {
+          for (peer_id in peer_ids) unique_peers++
+          exit(total >= minimum && matched == total && unique_peers == 1 ? 0 : 1)
+        }'
+}
+
 container_state_value() {
   local cid=$1
   local key=$2
@@ -258,6 +311,12 @@ release_container_scenario() {
   local cid=$1
   local epoch=$2
   docker exec "$cid" bash -c 'printf "%s\n" "$1" > /run/bitcoin-env/scenario.start' _ "$epoch"
+}
+
+release_container_activity() {
+  local cid=$1
+  local epoch=$2
+  docker exec "$cid" bash -c 'printf "%s\n" "$1" > /run/bitcoin-env/activity.start' _ "$epoch"
 }
 
 trap cleanup EXIT
@@ -302,6 +361,21 @@ if [[ -z "$SCENARIO_ID" || ! "$SCENARIO_ID" =~ ^[0-9]+$ ]]; then
   usage >&2
   exit 2
 fi
+if [[ ! "$SCENARIO_DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'SCENARIO_DURATION_SECONDS must be a positive integer: %s\n' \
+    "$SCENARIO_DURATION_SECONDS" >&2
+  exit 2
+fi
+if (( SCENARIO_DURATION_SECONDS < 60 )); then
+  printf 'SCENARIO_DURATION_SECONDS must be at least 60.\n' >&2
+  exit 2
+fi
+if [[ ! "$SCENARIO_WARMUP_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'SCENARIO_WARMUP_SECONDS must be a positive integer: %s\n' \
+    "$SCENARIO_WARMUP_SECONDS" >&2
+  exit 2
+fi
+TIMEOUT_SECONDS=$((SCENARIO_DURATION_SECONDS + SCENARIO_TIMEOUT_MARGIN_SECONDS))
 shopt -s nullglob
 scenario_files=(scenarios/node??_scenario"${SCENARIO_ID}".sh)
 if [[ ${#scenario_files[@]} -eq 0 ]]; then
@@ -332,12 +406,14 @@ prepare_binary_metadata
 PROJECT_NAME="bitcoin-env-s${SCENARIO_ID}-$$-${RANDOM}"
 export CORE_IMAGE NODE_IMAGE_TAG SCENARIO_ID ACTIVE_NODES
 export BOOTSTRAP_TARGET_HEIGHT BOOTSTRAP_TIMEOUT_SECONDS
+export SCENARIO_DURATION_SECONDS SCENARIO_WARMUP_SECONDS
 
 log "Using ${RESOURCE_PROFILE}"
 log "Using bin/bitcoin-binaries.tar.gz"
 log "Compiled source: ${SOURCE_REPOSITORY}; revision: ${SOURCE_REVISION}; architecture: ${BINARY_ARCHITECTURE}"
 log "Compiled binary version: ${BINARY_VERSION}"
 log "Scenario ${SCENARIO_ID} selects only: ${ACTIVE_NODES}"
+log "Scenario completion timeout: ${TIMEOUT_SECONDS}s (${SCENARIO_DURATION_SECONDS}s duration plus ${SCENARIO_TIMEOUT_MARGIN_SECONDS}s margin)"
 log "Every selected node starts empty and mines one sequential share of heights 1-${BOOTSTRAP_TARGET_HEIGHT}"
 compose config --quiet
 
@@ -370,13 +446,18 @@ log "Launching selected nodes on the internal-only Docker network"
 compose up --detach --no-build --remove-orphans "${SERVICES[@]}"
 
 for service in "${SERVICES[@]}"; do
-  cid=$(compose ps --quiet "$service")
+  cid=$(compose ps --all --quiet "$service")
   if [[ -z "$cid" ]]; then
     log "No container ID was created for ${service}"
     log "Per-node logs will be exported during cleanup"
     exit 5
   fi
   CONTAINER_IDS[$service]=$cid
+  if [[ -z "$(compose ps --quiet "$service")" ]]; then
+    log "${service} exited immediately after startup"
+    log "Per-node logs will be exported during cleanup"
+    exit 5
+  fi
 done
 
 expected_memory=3221225472
@@ -510,13 +591,55 @@ printf 'INITIAL_200_BLOCK_STATE_REACHED chain=signet height=%s tip=%s nodes=%s\n
 log "Initial 200-block state has been reached; proceeding with test scenario ${SCENARIO_ID}"
 
 scenario_epoch=$(( $(date +%s) + 5 ))
-log "Releasing scenario ${SCENARIO_ID} on all nodes at epoch ${scenario_epoch}"
+log "Releasing scenario ${SCENARIO_ID} preparation on all nodes at epoch ${scenario_epoch}"
 for service in "${SERVICES[@]}"; do
   release_container_scenario "${CONTAINER_IDS[$service]}" "$scenario_epoch"
 done
 
+log "Waiting for every selected node to finish scenario preparation"
+preparation_deadline=$(( $(date +%s) + SCENARIO_PREPARATION_TIMEOUT_SECONDS ))
+last_prepared=-1
+while :; do
+  prepared=0
+  for service in "${SERVICES[@]}"; do
+    cid=${CONTAINER_IDS[$service]}
+    if container_file_exists "$cid" /run/bitcoin-env/scenario.prepared; then
+      prepared=$((prepared + 1))
+      continue
+    fi
+    if container_file_exists "$cid" /run/bitcoin-env/scenario.done; then
+      log "${service} failed before completing scenario preparation"
+      log "Per-node logs will be exported during cleanup"
+      exit 6
+    fi
+    running=$(docker inspect --format '{{.State.Running}}' "$cid" 2>/dev/null || printf 'false')
+    if [[ "$running" != "true" ]]; then
+      log "${service} exited during scenario preparation"
+      log "Per-node logs will be exported during cleanup"
+      exit 6
+    fi
+  done
+  if (( prepared != last_prepared )); then
+    log "Scenario preparation: ${prepared}/${#SERVICES[@]} node(s)"
+    last_prepared=$prepared
+  fi
+  (( prepared == ${#SERVICES[@]} )) && break
+  if (( $(date +%s) > preparation_deadline )); then
+    log "Timed out after ${SCENARIO_PREPARATION_TIMEOUT_SECONDS}s preparing scenario ${SCENARIO_ID}"
+    log "Per-node logs will be exported during cleanup"
+    exit 7
+  fi
+  sleep 1
+done
+
+activity_epoch=$(( $(date +%s) + SCENARIO_WARMUP_SECONDS ))
+log "Releasing synchronized activity and faults at epoch ${activity_epoch}"
+for service in "${SERVICES[@]}"; do
+  release_container_activity "${CONTAINER_IDS[$service]}" "$activity_epoch"
+done
+
 log "Waiting for every selected node to finish its scenario"
-deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+deadline=$((activity_epoch + TIMEOUT_SECONDS))
 last_completed=-1
 while :; do
   completed=0
@@ -547,6 +670,16 @@ while :; do
 done
 
 overall_status=0
+node05_ip=
+if [[ "$SCENARIO_ID" == "2" ]]; then
+  node05_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+    "${CONTAINER_IDS[node05]}" 2>/dev/null || true)
+  if [[ ! "$node05_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    log "Could not determine node05's container address for invalid-score attribution"
+    overall_status=1
+  fi
+fi
+
 for service in "${SERVICES[@]}"; do
   cid=${CONTAINER_IDS[$service]}
   status=$(container_file_read "$cid" /run/bitcoin-env/scenario.status 2>/dev/null || printf '125')
@@ -556,6 +689,50 @@ for service in "${SERVICES[@]}"; do
     overall_status=1
   else
     log "${service} reported success"
+  fi
+done
+
+for service in "${SERVICES[@]}"; do
+  cid=${CONTAINER_IDS[$service]}
+  if container_logs_contain "$cid" 'peer scoring update:'; then
+    log "${service} emitted peer-scoring evidence"
+  else
+    log "${service} did not emit the required 'peer scoring update:' marker"
+    overall_status=1
+  fi
+
+  if [[ "$service" =~ ^node0[1357]$ ]]; then
+    for fault_marker in 'state=delay ' 'state=network-interruption ' 'state=process-failure '; do
+      if ! container_logs_contain_at_least "$cid" "$fault_marker" 2; then
+        log "${service} did not complete recurring fault state ${fault_marker% }"
+        overall_status=1
+      fi
+    done
+  fi
+
+  if [[ "$SCENARIO_ID" == "1" ]]; then
+    if container_logs_contain "$cid" 'trigger=invalid_block'; then
+      log "${service} unexpectedly emitted trigger=invalid_block in scenario 1"
+      overall_status=1
+    else
+      log "${service} emitted no invalid-block trigger, as expected"
+    fi
+  elif [[ "$service" == "node05" ]]; then
+    if ! container_logs_contain "$cid" 'sender_complete candidates=' \
+        || ! container_logs_contain "$cid" 'reconnecting_peers=none'; then
+      log "node05 did not retain all seven invalid-block P2P sessions"
+      overall_status=1
+    fi
+  else
+    if ! container_logs_contain "$cid" 'high-hash'; then
+      log "${service} did not reject the node05 sidecar block as high-hash"
+      overall_status=1
+    elif ! invalid_scores_are_persistent "$cid" "$node05_ip" 2; then
+      log "${service} did not score repeated invalid blocks on one persistent node05 peer"
+      overall_status=1
+    else
+      log "${service} rejected and scored recurring invalid blocks on one node05 sidecar peer"
+    fi
   fi
 done
 

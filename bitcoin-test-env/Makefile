@@ -1,10 +1,13 @@
-.PHONY: list scenario1 clean-images
+.PHONY: list scenario1 scenario2 clean-images
 
 list:
 	./run.sh --list
 
 scenario1:
 	./run.sh 1
+
+scenario2:
+	./run.sh 2
 
 clean-images:
 	-docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E '^bitcoin-env/node0[1-8]:source-' | xargs -r docker image rm

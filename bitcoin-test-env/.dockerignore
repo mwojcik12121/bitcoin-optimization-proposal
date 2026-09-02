@@ -6,3 +6,5 @@
 *.tar.gz
 !bin/bitcoin-binaries.tar.gz
 logs/
+**/__pycache__/
+*.py[cod]

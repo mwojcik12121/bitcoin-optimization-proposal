@@ -76,6 +76,19 @@ struct RelayScoreContext {
     double latency{0.0};
 };
 
+/** The total relay-quality score and every normalized input used to derive it. */
+struct RelayScoreBreakdown {
+    double total{0.0};
+    double validated_announcements{0.0};
+    double requested_block_success{0.0};
+    double compact_block_quality{0.0};
+    double chain_freshness{0.0};
+    double availability{0.0};
+    double latency{0.0};
+    double stall_rate{0.0};
+    double invalid_block_rate{0.0};
+};
+
 /** Local, non-persistent observations of a peer's recent block-relay quality. */
 class RelayQuality
 {
@@ -139,24 +152,39 @@ public:
                m_evidence.EffectiveWeight(now) >= MIN_EFFECTIVE_OBSERVATIONS;
     }
 
+    double EffectiveObservations(const int64_t now) const
+    {
+        return m_evidence.EffectiveWeight(now);
+    }
+
+    RelayScoreBreakdown ScoreBreakdown(const RelayScoreContext& context, const int64_t now) const
+    {
+        RelayScoreBreakdown score{
+            .validated_announcements =
+                std::min(1.0, m_valid_announcements.EffectiveWeight(now) / 8.0),
+            .requested_block_success = m_requested_block_success.Mean(now, 0.5),
+            .compact_block_quality = m_compact_quality.Mean(now, 0.5),
+            .chain_freshness = context.chain_freshness,
+            .availability = context.availability,
+            .latency = context.latency,
+            .stall_rate = m_stall_rate.Mean(now, 0.0),
+            .invalid_block_rate = m_invalid_block_rate.Mean(now, 0.0),
+        };
+        score.total = std::clamp(0.30 * score.validated_announcements +
+                                     0.25 * score.requested_block_success +
+                                     0.15 * score.compact_block_quality +
+                                     0.15 * score.chain_freshness +
+                                     0.10 * score.availability +
+                                     0.05 * score.latency -
+                                     0.50 * score.stall_rate -
+                                     1.00 * score.invalid_block_rate,
+                                 -1.0, 1.0);
+        return score;
+    }
+
     double Score(const RelayScoreContext& context, const int64_t now) const
     {
-        const double announcements{
-            std::min(1.0, m_valid_announcements.EffectiveWeight(now) / 8.0)};
-        const double requested_success{m_requested_block_success.Mean(now, 0.5)};
-        const double compact_quality{m_compact_quality.Mean(now, 0.5)};
-        const double stall_rate{m_stall_rate.Mean(now, 0.0)};
-        const double invalid_rate{m_invalid_block_rate.Mean(now, 0.0)};
-
-        return std::clamp(0.30 * announcements +
-                              0.25 * requested_success +
-                              0.15 * compact_quality +
-                              0.15 * context.chain_freshness +
-                              0.10 * context.availability +
-                              0.05 * context.latency -
-                              0.50 * stall_rate -
-                              1.00 * invalid_rate,
-                          -1.0, 1.0);
+        return ScoreBreakdown(context, now).total;
     }
 };
 

@@ -95,7 +95,7 @@ verify_binary_metadata() {
   embedded_revision=$(tr -d '[:space:]' < /opt/bitcoin/SOURCE_REVISION)
   embedded_architecture=$(tr -d '[:space:]' < /opt/bitcoin/ARCHITECTURE)
   embedded_version=$(head -n 1 /opt/bitcoin/VERSION)
-  actual_version=$(bitcoind --version | head -n 1)
+  actual_version=$(bitcoind -datadir="$BITCOIN_DATADIR" --version | head -n 1)
   BITCOIN_COMPILED_VERSION=$embedded_version
 
   if [[ ! "$embedded_repository" =~ ^[A-Za-z0-9._-]+$ \
@@ -292,6 +292,7 @@ rpcallowip=${NETWORK_SUBNET}
 rpcallowip=127.0.0.1
 rpcbind=0.0.0.0:${RPC_PORT}
 rpcport=${RPC_PORT}
+whitelist=noban@${NETWORK_SUBNET}
 CFG
 
   for peer in "${ACTIVE_NODE_LIST[@]}"; do

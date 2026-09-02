@@ -67,4 +67,38 @@ BOOST_AUTO_TEST_CASE(invalid_full_blocks_reduce_score)
     BOOST_CHECK(quality.Score(context, now + 22) < before);
 }
 
+BOOST_AUTO_TEST_CASE(score_breakdown_reports_every_parameter)
+{
+    node::RelayQuality quality;
+    const int64_t now{1'000'000};
+
+    for (int i = 0; i < 8; ++i) {
+        quality.ObserveValidatedAnnouncement(now);
+    }
+    quality.ObserveRequestedBlockResult(true, now);
+    quality.ObserveRequestedBlockResult(false, now);
+    quality.ObserveCompactBlockResult(node::CompactBlockOutcome::AFTER_BLOCKTXN, now);
+    quality.ObserveValidFullBlockSource(now);
+    quality.ObserveInvalidFullBlockSource(now);
+
+    const node::RelayScoreContext context{
+        .chain_freshness = 0.8,
+        .availability = 0.6,
+        .latency = 0.4,
+    };
+    const auto score{quality.ScoreBreakdown(context, now)};
+
+    BOOST_CHECK_EQUAL(score.validated_announcements, 1.0);
+    BOOST_CHECK_EQUAL(score.requested_block_success, 0.5);
+    BOOST_CHECK_EQUAL(score.compact_block_quality, 0.5);
+    BOOST_CHECK_EQUAL(score.chain_freshness, 0.8);
+    BOOST_CHECK_EQUAL(score.availability, 0.6);
+    BOOST_CHECK_EQUAL(score.latency, 0.4);
+    BOOST_CHECK_EQUAL(score.stall_rate, 0.5);
+    BOOST_CHECK_EQUAL(score.invalid_block_rate, 0.5);
+    BOOST_CHECK_SMALL(score.total + 0.05, 1e-12);
+    BOOST_CHECK_EQUAL(quality.Score(context, now), score.total);
+    BOOST_CHECK_EQUAL(quality.EffectiveObservations(now), 13.0);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -1,2 +1,4 @@
 bin/*.tar.gz
 logs/*.log
+**/__pycache__/
+*.py[cod]

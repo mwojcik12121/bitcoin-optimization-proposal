@@ -1,3 +1,2 @@
 bin/*.tar.gz
-src/*
-!src/README.md
+src/bitcoin-31.1

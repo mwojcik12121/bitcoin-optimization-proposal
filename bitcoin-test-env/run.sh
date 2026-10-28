@@ -26,7 +26,7 @@ REBUILD_NODES=0
 SCENARIO_ID=
 PROJECT_NAME=
 ACTIVE_NODES=
-RESOURCE_PROFILE="3 GB/node, 24 GB total; 93.75 GiB/node transient tmpfs ceiling"
+RESOURCE_PROFILE="3 GB/node, 12 GB total; 93.75 GiB/node transient tmpfs ceiling"
 COMPOSE_FILES=(-f compose.yaml)
 SERVICES=()
 CLEANUP_DONE=0
@@ -52,13 +52,25 @@ log() {
   test_log INFO runner "$*"
 }
 
+scenario_name() {
+  local scenario_file="${ROOT_DIR}/scenarios/node01_scenario${1}.sh"
+  local title
+
+  if [[ ! -r "$scenario_file" ]]; then
+    printf '%s\n' 'unknown'
+    return
+  fi
+  title=$(awk -F': ' '/^# SCENARIO_TITLE: / {sub(/^# SCENARIO_TITLE: /, ""); print; exit}' "$scenario_file")
+  printf '%s\n' "${title:-unknown}"
+}
+
 list_scenarios() {
   local file base scenario node
   declare -A scenario_nodes=()
   shopt -s nullglob
   for file in scenarios/node??_scenario*.sh; do
     base=$(basename "$file")
-    if [[ "$base" =~ ^node(0[1-8])_scenario([0-9]+)\.sh$ ]]; then
+    if [[ "$base" =~ ^node(01|02|03|04)_scenario([0-9]+)\.sh$ ]]; then
       node="node${BASH_REMATCH[1]}"
       scenario=${BASH_REMATCH[2]}
       scenario_nodes[$scenario]="${scenario_nodes[$scenario]:-} ${node}"
@@ -69,7 +81,8 @@ list_scenarios() {
     return
   fi
   while IFS= read -r scenario; do
-    printf 'scenario %-4s nodes:%s\n' "$scenario" "${scenario_nodes[$scenario]}"
+    printf 'scenario %-4s %-36s nodes:%s\n' \
+      "$scenario" "$(scenario_name "$scenario")" "${scenario_nodes[$scenario]}"
   done < <(printf '%s\n' "${!scenario_nodes[@]}" | sort -n)
 }
 
@@ -108,12 +121,8 @@ prepare_binary_metadata() {
     return 1
   fi
   for required in \
-    usr/local/bin/bitcoin \
     usr/local/bin/bitcoind \
     usr/local/bin/bitcoin-cli \
-    usr/local/bin/bitcoin-tx \
-    usr/local/bin/bitcoin-util \
-    usr/local/bin/bitcoin-wallet \
     opt/bitcoin/COPYING \
     opt/bitcoin/SOURCE_REPOSITORY \
     opt/bitcoin/SOURCE_REVISION \
@@ -152,7 +161,7 @@ verify_core_image_binaries() {
     --env "EXPECTED_VERSION=${BINARY_VERSION}" \
     --entrypoint /bin/bash \
     "$CORE_IMAGE" -Eeuo pipefail -c '
-      for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do
+      for binary in bitcoind bitcoin-cli; do
         command -v "$binary" >/dev/null
       done
       test "$BITCOIN_SOURCE_REPOSITORY" = "$EXPECTED_SOURCE_REPOSITORY"
@@ -251,54 +260,6 @@ container_file_read() {
   docker cp "${cid}:${path}" - 2>/dev/null | tar -xOf - 2>/dev/null
 }
 
-container_logs_contain() {
-  local cid=$1
-  local marker=$2
-
-  docker logs "$cid" 2>&1 \
-    | awk -v marker="$marker" 'index($0, marker) { found = 1 } END { exit(found ? 0 : 1) }'
-}
-
-container_logs_contain_at_least() {
-  local cid=$1
-  local marker=$2
-  local minimum=$3
-
-  docker logs "$cid" 2>&1 \
-    | awk -v marker="$marker" -v minimum="$minimum" \
-        'index($0, marker) { count++ } END { exit(count >= minimum ? 0 : 1) }'
-}
-
-invalid_scores_are_persistent() {
-  local cid=$1
-  local expected_ip=$2
-  local minimum=$3
-
-  docker logs "$cid" 2>&1 \
-    | awk -v expected_ip="$expected_ip" -v minimum="$minimum" '
-        index($0, "peer scoring update:") && index($0, "trigger=invalid_block") {
-          total++
-          peer_id = ""
-          source_matches = 0
-          for (field = 1; field <= NF; field++) {
-            if ($field ~ /^scored_peer=/) {
-              split($field, value, "=")
-              peer_id = value[2]
-            }
-            if (index($field, "peeraddr=" expected_ip ":") == 1) {
-              source_matches = 1
-            }
-          }
-          if (peer_id != "" && source_matches) {
-            matched++
-            peer_ids[peer_id] = 1
-          }
-        }
-        END {
-          for (peer_id in peer_ids) unique_peers++
-          exit(total >= minimum && matched == total && unique_peers == 1 ? 0 : 1)
-        }'
-}
 
 container_state_value() {
   local cid=$1
@@ -386,7 +347,7 @@ fi
 
 for file in "${scenario_files[@]}"; do
   base=$(basename "$file")
-  if [[ ! "$base" =~ ^node(0[1-8])_scenario${SCENARIO_ID}\.sh$ ]]; then
+  if [[ ! "$base" =~ ^node(01|02|03|04)_scenario${SCENARIO_ID}\.sh$ ]]; then
     printf 'Invalid scenario filename: %s\n' "$base" >&2
     exit 3
   fi
@@ -412,7 +373,7 @@ log "Using ${RESOURCE_PROFILE}"
 log "Using bin/bitcoin-binaries.tar.gz"
 log "Compiled source: ${SOURCE_REPOSITORY}; revision: ${SOURCE_REVISION}; architecture: ${BINARY_ARCHITECTURE}"
 log "Compiled binary version: ${BINARY_VERSION}"
-log "Scenario ${SCENARIO_ID} selects only: ${ACTIVE_NODES}"
+log "Scenario ${SCENARIO_ID} ($(scenario_name "$SCENARIO_ID")) selects only: ${ACTIVE_NODES}"
 log "Scenario completion timeout: ${TIMEOUT_SECONDS}s (${SCENARIO_DURATION_SECONDS}s duration plus ${SCENARIO_TIMEOUT_MARGIN_SECONDS}s margin)"
 log "Every selected node starts empty and mines one sequential share of heights 1-${BOOTSTRAP_TARGET_HEIGHT}"
 compose config --quiet
@@ -586,8 +547,7 @@ printf 'architecture: %s\n' "$BINARY_ARCHITECTURE"
 printf 'version:      %s\n' "$BINARY_VERSION"
 printf 'status:       initial 200-block state reached on all selected nodes\n'
 printf '=============================================\n'
-printf 'INITIAL_200_BLOCK_STATE_REACHED chain=signet height=%s tip=%s nodes=%s\n\n' \
-  "$BOOTSTRAP_TARGET_HEIGHT" "$reference_hash" "$ACTIVE_NODES"
+printf '\n'
 log "Initial 200-block state has been reached; proceeding with test scenario ${SCENARIO_ID}"
 
 scenario_epoch=$(( $(date +%s) + 5 ))
@@ -633,7 +593,7 @@ while :; do
 done
 
 activity_epoch=$(( $(date +%s) + SCENARIO_WARMUP_SECONDS ))
-log "Releasing synchronized activity and faults at epoch ${activity_epoch}"
+log "Releasing synchronized ACP test activity at epoch ${activity_epoch}"
 for service in "${SERVICES[@]}"; do
   release_container_activity "${CONTAINER_IDS[$service]}" "$activity_epoch"
 done
@@ -646,6 +606,13 @@ while :; do
   for service in "${SERVICES[@]}"; do
     cid=${CONTAINER_IDS[$service]}
     if container_file_exists "$cid" /run/bitcoin-env/scenario.done; then
+      scenario_status=$(container_file_read "$cid" /run/bitcoin-env/scenario.status 2>/dev/null || printf '125')
+      scenario_status=${scenario_status//$'\n'/}
+      if [[ ! "$scenario_status" =~ ^[0-9]+$ || "$scenario_status" != "0" ]]; then
+        log "${service} reported scenario status ${scenario_status:-unreadable}"
+        log "Per-node logs will be exported during cleanup"
+        exit 6
+      fi
       completed=$((completed + 1))
       continue
     fi
@@ -670,15 +637,6 @@ while :; do
 done
 
 overall_status=0
-node05_ip=
-if [[ "$SCENARIO_ID" == "2" ]]; then
-  node05_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-    "${CONTAINER_IDS[node05]}" 2>/dev/null || true)
-  if [[ ! "$node05_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    log "Could not determine node05's container address for invalid-score attribution"
-    overall_status=1
-  fi
-fi
 
 for service in "${SERVICES[@]}"; do
   cid=${CONTAINER_IDS[$service]}
@@ -688,56 +646,41 @@ for service in "${SERVICES[@]}"; do
     log "${service} reported scenario status ${status:-unreadable}"
     overall_status=1
   else
-    log "${service} reported success"
+    log "${service} reported scenario status 0"
   fi
 done
 
-for service in "${SERVICES[@]}"; do
-  cid=${CONTAINER_IDS[$service]}
-  if container_logs_contain "$cid" 'peer scoring update:'; then
-    log "${service} emitted peer-scoring evidence"
+expected_observations=0
+case "$SCENARIO_ID" in
+  1) expected_observations=3 ;;
+  2) expected_observations=2 ;;
+  3) expected_observations=21 ;;
+esac
+
+orchestrator_cid=${CONTAINER_IDS[node01]:-}
+if [[ -z "$orchestrator_cid" ]]; then
+  log "Scenario ${SCENARIO_ID} did not select node01 as its orchestrator"
+  overall_status=1
+elif ! container_file_exists "$orchestrator_cid" /run/bitcoin-env/acp-observations.jsonl; then
+  log "node01 did not create the behavior-observation result file"
+  overall_status=1
+else
+  observation_count=$(container_file_read "$orchestrator_cid" \
+    /run/bitcoin-env/acp-observations.jsonl | awk 'NF {count++} END {print count + 0}')
+  if [[ "$observation_count" == "$expected_observations" ]]; then
+    log "node01 recorded ${observation_count} behavior observation(s)"
   else
-    log "${service} did not emit the required 'peer scoring update:' marker"
+    log "node01 recorded ${observation_count} behavior observation(s); expected ${expected_observations}"
     overall_status=1
   fi
-
-  if [[ "$service" =~ ^node0[1357]$ ]]; then
-    for fault_marker in 'state=delay ' 'state=network-interruption ' 'state=process-failure '; do
-      if ! container_logs_contain_at_least "$cid" "$fault_marker" 2; then
-        log "${service} did not complete recurring fault state ${fault_marker% }"
-        overall_status=1
-      fi
-    done
+  if ! container_file_exists "$orchestrator_cid" /run/bitcoin-env/acp-behavior-summary.json; then
+    log "node01 did not create the behavior summary file"
+    overall_status=1
   fi
-
-  if [[ "$SCENARIO_ID" == "1" ]]; then
-    if container_logs_contain "$cid" 'trigger=invalid_block'; then
-      log "${service} unexpectedly emitted trigger=invalid_block in scenario 1"
-      overall_status=1
-    else
-      log "${service} emitted no invalid-block trigger, as expected"
-    fi
-  elif [[ "$service" == "node05" ]]; then
-    if ! container_logs_contain "$cid" 'sender_complete candidates=' \
-        || ! container_logs_contain "$cid" 'reconnecting_peers=none'; then
-      log "node05 did not retain all seven invalid-block P2P sessions"
-      overall_status=1
-    fi
-  else
-    if ! container_logs_contain "$cid" 'high-hash'; then
-      log "${service} did not reject the node05 sidecar block as high-hash"
-      overall_status=1
-    elif ! invalid_scores_are_persistent "$cid" "$node05_ip" 2; then
-      log "${service} did not score repeated invalid blocks on one persistent node05 peer"
-      overall_status=1
-    else
-      log "${service} rejected and scored recurring invalid blocks on one node05 sidecar peer"
-    fi
-  fi
-done
+fi
 
 if [[ "$overall_status" -ne 0 ]]; then
-  log "Scenario ${SCENARIO_ID} failed"
+  log "Scenario ${SCENARIO_ID} failed before completing its prescribed actions and observations"
   exit 8
 fi
-log "Scenario ${SCENARIO_ID} passed on ${ACTIVE_NODES}; runtime-generated initial hash=${reference_hash}"
+log "Scenario ${SCENARIO_ID} completed on ${ACTIVE_NODES}; observed binary behavior is recorded in the exported logs; runtime-generated initial hash=${reference_hash}"

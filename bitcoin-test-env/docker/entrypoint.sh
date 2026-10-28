@@ -5,7 +5,6 @@ source /controls/logging.sh
 
 NODE_ID=${NODE_ID:-}
 NODE_NAME=${NODE_NAME:-}
-NODE_ROLE=${NODE_ROLE:-validator}
 SCENARIO_ID=${SCENARIO_ID:-}
 ACTIVE_NODES=${ACTIVE_NODES:-}
 BOOTSTRAP_TARGET_HEIGHT=${BOOTSTRAP_TARGET_HEIGHT:-200}
@@ -78,7 +77,7 @@ verify_binary_metadata() {
   local binary metadata_file
   local embedded_repository embedded_revision embedded_architecture embedded_version actual_version
 
-  for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do
+  for binary in bitcoind bitcoin-cli; do
     command -v "$binary" >/dev/null 2>&1 || {
       log "Required locally compiled binary is missing: ${binary}"
       return 1
@@ -144,8 +143,8 @@ validate_inputs() {
   if [[ $# -eq 1 ]]; then
     SCENARIO_ID=$1
   fi
-  if [[ ! "$NODE_ID" =~ ^0[1-8]$ ]]; then
-    printf 'NODE_ID must be 01 through 08: %s\n' "${NODE_ID:-missing}" >&2
+  if [[ ! "$NODE_ID" =~ ^(01|02|03|04)$ ]]; then
+    printf 'NODE_ID must be one of 01, 02, 03, or 04: %s\n' "${NODE_ID:-missing}" >&2
     return 2
   fi
   NODE_NAME=${NODE_NAME:-node${NODE_ID}}
@@ -180,7 +179,7 @@ parse_active_nodes() {
   BOOTSTRAP_POSITION=-1
   for index in "${!ACTIVE_NODE_LIST[@]}"; do
     node=${ACTIVE_NODE_LIST[$index]}
-    if [[ ! "$node" =~ ^node0[1-8]$ ]]; then
+    if [[ ! "$node" =~ ^node(01|02|03|04)$ ]]; then
       log "Invalid active-node name: ${node}"
       return 2
     fi
@@ -255,7 +254,6 @@ rpcuser=${RPC_USER}
 rpcpassword=${RPC_PASSWORD}
 rpcthreads=4
 maxconnections=64
-txindex=1
 assumevalid=0
 minimumchainwork=0
 fallbackfee=0.00001000
@@ -430,23 +428,10 @@ mine_bootstrap_share() {
   log "Completed bootstrap range ${BOOTSTRAP_START_HEIGHT}-${BOOTSTRAP_END_HEIGHT}"
 }
 
-wait_for_txindex() {
-  local deadline=$(( $(date +%s) + BOOTSTRAP_TIMEOUT_SECONDS ))
-  while (( $(date +%s) <= deadline )); do
-    if local_cli getindexinfo txindex 2>/dev/null | jq -e '.txindex.synced == true' >/dev/null; then
-      return 0
-    fi
-    sleep 0.5
-  done
-  log "Timed out waiting for txindex"
-  return 1
-}
-
 verify_local_initial_state() {
   local chain challenge
 
   wait_for_exact_bootstrap_height "$BOOTSTRAP_TARGET_HEIGHT"
-  wait_for_txindex
   verify_private_signet
   INITIAL_TIP_HASH=$(local_cli getblockhash "$BOOTSTRAP_TARGET_HEIGHT")
   local_cli verifychain 4 0 >/dev/null
@@ -503,7 +488,7 @@ execute_scenario() {
   if [[ ! -f "$scenario_file" ]]; then
     log "Scenario file is missing: ${scenario_file}"
   else
-    export NODE_ID NODE_NAME NODE_ROLE SCENARIO_ID ACTIVE_NODES SCENARIO_START_EPOCH BITCOIND_PID
+    export NODE_ID NODE_NAME SCENARIO_ID ACTIVE_NODES SCENARIO_START_EPOCH BITCOIND_PID
     export BITCOIN_DATADIR RPC_USER RPC_PASSWORD RPC_PORT P2P_PORT NETWORK_SUBNET
     export BITCOIN_SOURCE_REPOSITORY BITCOIN_SOURCE_REVISION BITCOIN_ARCHITECTURE BITCOIN_COMPILED_VERSION
     log "Executing ${scenario_file}"

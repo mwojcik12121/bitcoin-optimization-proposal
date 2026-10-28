@@ -9,10 +9,9 @@ ARG BITCOIN_ARCHITECTURE=unknown
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       bash ca-certificates coreutils findutils gosu gzip iproute2 iptables iputils-ping jq \
+       bash ca-certificates coreutils findutils gosu gzip iproute2 jq \
        libatomic1 libevent-core-2.1-7 libevent-extra-2.1-7 libevent-pthreads-2.1-7 \
-       libgcc-s1 libsqlite3-0 libstdc++6 \
-       netcat-openbsd procps python3 tar util-linux \
+       libgcc-s1 libsqlite3-0 libstdc++6 tar util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 bitcoin \
     && useradd --uid 10001 --gid bitcoin --home-dir /home/bitcoin --create-home --shell /bin/bash bitcoin
@@ -34,7 +33,7 @@ RUN set -eux; \
     test "$(cat opt/bitcoin/ARCHITECTURE)" = "$BITCOIN_ARCHITECTURE"; \
     test "$(cat opt/bitcoin/ARCHITECTURE)" = "$(dpkg --print-architecture)"; \
     install -d -m 0755 /usr/local/bin /opt/bitcoin; \
-    for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do \
+    for binary in bitcoind bitcoin-cli; do \
       test -x "usr/local/bin/${binary}"; \
       install -m 0755 "usr/local/bin/${binary}" "/usr/local/bin/${binary}"; \
     done; \
@@ -43,7 +42,7 @@ RUN set -eux; \
     install -m 0644 opt/bitcoin/SOURCE_REVISION /opt/bitcoin/SOURCE_REVISION; \
     install -m 0644 opt/bitcoin/ARCHITECTURE /opt/bitcoin/ARCHITECTURE; \
     install -m 0644 opt/bitcoin/VERSION /opt/bitcoin/VERSION; \
-    for binary in bitcoin bitcoind bitcoin-cli bitcoin-tx bitcoin-util bitcoin-wallet; do \
+    for binary in bitcoind bitcoin-cli; do \
       command -v "$binary"; \
       if ldd "/usr/local/bin/${binary}" 2>/dev/null | grep -q 'not found'; then \
         ldd "/usr/local/bin/${binary}" >&2; \

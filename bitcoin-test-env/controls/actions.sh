@@ -5,7 +5,6 @@ NODE_NAME=${NODE_NAME:-node${NODE_ID}}
 BITCOIN_DATADIR=${BITCOIN_DATADIR:-/data}
 RPC_USER=${RPC_USER:-bitcoinenv}
 RPC_PASSWORD=${RPC_PASSWORD:-bitcoinenv-internal-only}
-RPC_PORT=${RPC_PORT:-38332}
 MINING_LOCK_FILE=${MINING_LOCK_FILE:-/run/bitcoin-env/mining.lock}
 
 _btc() {
@@ -24,21 +23,9 @@ _btc_wallet() {
   _btc -rpcwallet="$wallet" "$@"
 }
 
-_btc_remote() {
-  local node=$1
-  shift
-  bitcoin-cli \
-    -rpcconnect="$node" \
-    -rpcport="$RPC_PORT" \
-    -rpcuser="$RPC_USER" \
-    -rpcpassword="$RPC_PASSWORD" \
-    -rpcclienttimeout=5 \
-    "$@"
-}
-
 _wallet_for_node() {
   local node=$1
-  if [[ ! "$node" =~ ^node0[1-8]$ ]]; then
+  if [[ ! "$node" =~ ^node(01|02|03|04)$ ]]; then
     printf 'Invalid node name: %s\n' "$node" >&2
     return 2
   fi
@@ -72,24 +59,6 @@ new_address() {
 
   create_wallet "$wallet"
   _btc_wallet "$wallet" getnewaddress "$label" bech32
-}
-
-remote_new_address() {
-  local node=$1
-  local label=${2:-from-${NODE_NAME}}
-  local wallet
-
-  wallet=$(_wallet_for_node "$node")
-  _btc_remote "$node" -rpcwallet="$wallet" getnewaddress "$label" bech32
-}
-
-send_to_address() {
-  local address=$1
-  local amount=$2
-  local wallet=${3:-$(_default_wallet)}
-
-  create_wallet "$wallet"
-  _btc_wallet "$wallet" sendtoaddress "$address" "$amount"
 }
 
 _mine_one_to_address() {
@@ -147,8 +116,4 @@ wait_for_spendable_balance() {
     sleep 1
   done
   return 1
-}
-
-validate_chain() {
-  [[ "$(_btc verifychain 4 0)" == "true" ]]
 }

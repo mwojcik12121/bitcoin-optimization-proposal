@@ -180,7 +180,7 @@ run_race_attempt() {
       options=$(conditioned_race_options "$main_anchor")
       ;;
     *)
-      printf 'Unknown race mode: %s\n' "$mode" >&2
+      test_log ERROR scenario "Unknown race mode: ${mode}"
       return 2
       ;;
   esac

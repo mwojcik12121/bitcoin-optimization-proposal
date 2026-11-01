@@ -42,6 +42,10 @@ log() {
   test_log INFO entrypoint "$*"
 }
 
+log_error() {
+  test_log ERROR entrypoint "$*"
+}
+
 local_cli() {
   bitcoin-cli \
     -datadir="$BITCOIN_DATADIR" \
@@ -137,31 +141,31 @@ shutdown() {
 
 validate_inputs() {
   if [[ $# -gt 1 ]]; then
-    printf 'Expected at most one scenario-number argument, received %d\n' "$#" >&2
+    log_error "Expected at most one scenario-number argument, received $#"
     return 2
   fi
   if [[ $# -eq 1 ]]; then
     SCENARIO_ID=$1
   fi
   if [[ ! "$NODE_ID" =~ ^(01|02|03|04)$ ]]; then
-    printf 'NODE_ID must be one of 01, 02, 03, or 04: %s\n' "${NODE_ID:-missing}" >&2
+    log_error "NODE_ID must be one of 01, 02, 03, or 04: ${NODE_ID:-missing}"
     return 2
   fi
   NODE_NAME=${NODE_NAME:-node${NODE_ID}}
   if [[ "$NODE_NAME" != "node${NODE_ID}" ]]; then
-    printf 'NODE_NAME must match NODE_ID: %s versus %s\n' "$NODE_NAME" "$NODE_ID" >&2
+    log_error "NODE_NAME must match NODE_ID: ${NODE_NAME} versus ${NODE_ID}"
     return 2
   fi
   if [[ ! "$SCENARIO_ID" =~ ^[0-9]+$ ]]; then
-    printf 'Scenario number must be a non-negative integer: %s\n' "${SCENARIO_ID:-missing}" >&2
+    log_error "Scenario number must be a non-negative integer: ${SCENARIO_ID:-missing}"
     return 2
   fi
   if [[ "$BOOTSTRAP_TARGET_HEIGHT" != "200" ]]; then
-    printf 'BOOTSTRAP_TARGET_HEIGHT must be exactly 200.\n' >&2
+    log_error "BOOTSTRAP_TARGET_HEIGHT must be exactly 200"
     return 2
   fi
   if [[ ! "$BOOTSTRAP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer.\n' >&2
+    log_error "BOOTSTRAP_TIMEOUT_SECONDS must be a positive integer"
     return 2
   fi
 }

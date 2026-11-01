@@ -52,6 +52,10 @@ log() {
   test_log INFO runner "$*"
 }
 
+log_error() {
+  test_log ERROR runner "$*"
+}
+
 scenario_name() {
   local scenario_file="${ROOT_DIR}/scenarios/node01_scenario${1}.sh"
   local title
@@ -111,13 +115,13 @@ prepare_binary_metadata() {
   local members required
 
   if [[ ! -f "$BINARY_ARCHIVE" ]]; then
-    printf 'Copy bitcoin-binaries.tar.gz into bin/.\n' >&2
+    log_error "Copy bitcoin-binaries.tar.gz into bin/"
     return 1
   fi
 
   members=$(tar -tzf "$BINARY_ARCHIVE")
   if printf '%s\n' "$members" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
-    printf 'Binary artifact contains an unsafe path.\n' >&2
+    log_error "Binary artifact contains an unsafe path"
     return 1
   fi
   for required in \
@@ -129,7 +133,7 @@ prepare_binary_metadata() {
     opt/bitcoin/ARCHITECTURE \
     opt/bitcoin/VERSION; do
     if ! printf '%s\n' "$members" | grep -Fxq "$required"; then
-      printf 'Binary artifact is missing %s.\n' "$required" >&2
+      log_error "Binary artifact is missing ${required}"
       return 1
     fi
   done
@@ -145,7 +149,7 @@ prepare_binary_metadata() {
         || -z "$SOURCE_REVISION" \
         || ! "$BINARY_ARCHITECTURE" =~ ^(amd64|arm64)$ \
         || -z "$BINARY_VERSION" ]]; then
-    printf 'Binary artifact metadata is invalid.\n' >&2
+    log_error "Binary artifact metadata is invalid"
     return 1
   fi
 
@@ -219,7 +223,7 @@ save_node_logs() {
     if docker logs "$cid" >"$output_file" 2>&1; then
       log "Saved ${service} logs to ${output_file#$ROOT_DIR/}"
     else
-      printf 'Could not read Docker logs for container %s.\n' "$cid" >"$output_file"
+      (test_log ERROR runner "Could not read Docker logs for container ${cid}") >"$output_file" 2>&1
       log "Created ${output_file#$ROOT_DIR/}, but Docker could not return the container logs"
     fi
   done
@@ -303,13 +307,13 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     -*)
-      printf 'Unknown option: %s\n' "$1" >&2
+      log_error "Unknown option: $1"
       usage >&2
       exit 2
       ;;
     *)
       if [[ -n "$SCENARIO_ID" ]]; then
-        printf 'Only one scenario number may be supplied.\n' >&2
+        log_error "Only one scenario number may be supplied"
         exit 2
       fi
       SCENARIO_ID=$1
@@ -323,24 +327,22 @@ if [[ -z "$SCENARIO_ID" || ! "$SCENARIO_ID" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 if [[ ! "$SCENARIO_DURATION_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
-  printf 'SCENARIO_DURATION_SECONDS must be a positive integer: %s\n' \
-    "$SCENARIO_DURATION_SECONDS" >&2
+  log_error "SCENARIO_DURATION_SECONDS must be a positive integer: ${SCENARIO_DURATION_SECONDS}"
   exit 2
 fi
 if (( SCENARIO_DURATION_SECONDS < 60 )); then
-  printf 'SCENARIO_DURATION_SECONDS must be at least 60.\n' >&2
+  log_error "SCENARIO_DURATION_SECONDS must be at least 60"
   exit 2
 fi
 if [[ ! "$SCENARIO_WARMUP_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
-  printf 'SCENARIO_WARMUP_SECONDS must be a positive integer: %s\n' \
-    "$SCENARIO_WARMUP_SECONDS" >&2
+  log_error "SCENARIO_WARMUP_SECONDS must be a positive integer: ${SCENARIO_WARMUP_SECONDS}"
   exit 2
 fi
 TIMEOUT_SECONDS=$((SCENARIO_DURATION_SECONDS + SCENARIO_TIMEOUT_MARGIN_SECONDS))
 shopt -s nullglob
 scenario_files=(scenarios/node??_scenario"${SCENARIO_ID}".sh)
 if [[ ${#scenario_files[@]} -eq 0 ]]; then
-  printf 'No files match scenarios/nodeXX_scenario%s.sh\n' "$SCENARIO_ID" >&2
+  log_error "No files match scenarios/nodeXX_scenario${SCENARIO_ID}.sh"
   list_scenarios >&2
   exit 3
 fi
@@ -348,7 +350,7 @@ fi
 for file in "${scenario_files[@]}"; do
   base=$(basename "$file")
   if [[ ! "$base" =~ ^node(01|02|03|04)_scenario${SCENARIO_ID}\.sh$ ]]; then
-    printf 'Invalid scenario filename: %s\n' "$base" >&2
+    log_error "Invalid scenario filename: ${base}"
     exit 3
   fi
   SERVICES+=("node${BASH_REMATCH[1]}")
@@ -358,10 +360,10 @@ mapfile -t SERVICES < <(printf '%s\n' "${SERVICES[@]}" | sort -u)
 ACTIVE_NODES=$(IFS=,; printf '%s' "${SERVICES[*]}")
 
 for command_name in docker tar awk sort grep dirname basename head tr; do
-  command -v "$command_name" >/dev/null 2>&1 || { printf '%s is required.\n' "$command_name" >&2; exit 4; }
+  command -v "$command_name" >/dev/null 2>&1 || { log_error "${command_name} is required"; exit 4; }
 done
-docker compose version >/dev/null 2>&1 || { printf 'Docker Compose v2 is required.\n' >&2; exit 4; }
-docker info >/dev/null 2>&1 || { printf 'Docker Engine is not reachable.\n' >&2; exit 4; }
+docker compose version >/dev/null 2>&1 || { log_error "Docker Compose v2 is required"; exit 4; }
+docker info >/dev/null 2>&1 || { log_error "Docker Engine is not reachable"; exit 4; }
 prepare_binary_metadata
 
 PROJECT_NAME="bitcoin-env-s${SCENARIO_ID}-$$-${RANDOM}"
@@ -487,13 +489,9 @@ done
 
 
 reference_hash=
-printf '\n===== Initial 200-block state reached =====\n'
-printf 'chain:       private custom Signet\n'
-printf 'height:      %s\n' "$BOOTSTRAP_TARGET_HEIGHT"
-printf 'nodes:       %s\n' "$ACTIVE_NODES"
-printf 'network:     Docker internal network only\n'
-printf 'internet:    disabled for running nodes\n'
-printf 'generation:\n'
+log "Initial 200-block state reached"
+log "chain=private-custom-signet height=${BOOTSTRAP_TARGET_HEIGHT} nodes=${ACTIVE_NODES}"
+log "network=docker-internal internet=disabled"
 for index in "${!SERVICES[@]}"; do
   service=${SERVICES[$index]}
   cid=${CONTAINER_IDS[$service]}
@@ -537,17 +535,11 @@ for index in "${!SERVICES[@]}"; do
     log "Selected nodes do not agree on the height-${BOOTSTRAP_TARGET_HEIGHT} block hash"
     exit 7
   fi
-  printf '  %-6s heights %3s-%-3s  blocks=%-3s wallet=%s\n' \
-    "$service" "$mined_from" "$mined_to" "$mined_blocks" "$wallet"
+  log "bootstrap node=${service} heights=${mined_from}-${mined_to} blocks=${mined_blocks} wallet=${wallet}"
 done
-printf 'tip hash:     %s\n' "$reference_hash"
-printf 'binaries:     supplied by build environment (%s)\n' "$SOURCE_REPOSITORY"
-printf 'revision:     %s\n' "$SOURCE_REVISION"
-printf 'architecture: %s\n' "$BINARY_ARCHITECTURE"
-printf 'version:      %s\n' "$BINARY_VERSION"
-printf 'status:       initial 200-block state reached on all selected nodes\n'
-printf '=============================================\n'
-printf '\n'
+log "tip_hash=${reference_hash}"
+log "binary_repository=${SOURCE_REPOSITORY} revision=${SOURCE_REVISION} architecture=${BINARY_ARCHITECTURE} version=${BINARY_VERSION}"
+log "initial_state_status=ready"
 log "Initial 200-block state has been reached; proceeding with test scenario ${SCENARIO_ID}"
 
 scenario_epoch=$(( $(date +%s) + 5 ))

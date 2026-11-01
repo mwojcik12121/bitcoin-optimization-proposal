@@ -36,7 +36,7 @@ acp_require_positive_integer() {
   local value=$2
 
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
-    printf '%s must be a positive integer: %s\n' "$name" "$value" >&2
+    test_log ERROR scenario "${name} must be a positive integer: ${value}"
     return 2
   fi
 }
@@ -123,8 +123,8 @@ acp_begin_scenario() {
   local scenario_name=$1
 
   [[ "$ACTIVE_NODES" == "$ACP_EXPECTED_NODES" ]] || {
-    printf 'ACP scenario %s requires exactly %s: %s\n' \
-      "$SCENARIO_ID" "$ACP_EXPECTED_NODES" "$ACTIVE_NODES" >&2
+    test_log ERROR scenario \
+      "ACP scenario ${SCENARIO_ID} requires exactly ${ACP_EXPECTED_NODES}: ${ACTIVE_NODES}"
     return 2
   }
   acp_require_positive_integer SCENARIO_DURATION_SECONDS "$SCENARIO_DURATION_SECONDS"
@@ -154,7 +154,7 @@ acp_wait_for_activity_release() {
   done
   activity_epoch=$(tr -d '[:space:]' < "$release_file")
   [[ "$activity_epoch" =~ ^[1-9][0-9]*$ ]] || {
-    printf 'Invalid activity start epoch: %s\n' "$activity_epoch" >&2
+    test_log ERROR scenario "Invalid activity start epoch: ${activity_epoch}"
     return 2
   }
   printf '%s\n' "$activity_epoch"

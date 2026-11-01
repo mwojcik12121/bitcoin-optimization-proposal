@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+if ! declare -F test_log >/dev/null 2>&1; then
+  source /controls/logging.sh
+fi
+
 NODE_ID=${NODE_ID:-unknown}
 NODE_NAME=${NODE_NAME:-node${NODE_ID}}
 BITCOIN_DATADIR=${BITCOIN_DATADIR:-/data}
@@ -26,7 +30,7 @@ _btc_wallet() {
 _wallet_for_node() {
   local node=$1
   if [[ ! "$node" =~ ^node(01|02|03|04)$ ]]; then
-    printf 'Invalid node name: %s\n' "$node" >&2
+    test_log ERROR actions "Invalid node name: ${node}"
     return 2
   fi
   printf 'wallet-%s\n' "$node"
@@ -68,7 +72,7 @@ _mine_one_to_address() {
   hash_result=$(_btc generatetoaddress 1 "$address" 100000000)
   block_hash=$(jq -r 'if type == "array" and length == 1 then .[0] else empty end' <<<"$hash_result")
   if [[ ! "$block_hash" =~ ^[0-9a-f]{64}$ ]]; then
-    printf 'Bitcoin Core returned no valid block hash.\n' >&2
+    test_log ERROR actions "Bitcoin Core returned no valid block hash"
     return 1
   fi
   printf '%s\n' "$block_hash"
@@ -92,7 +96,7 @@ mine_blocks() {
   local wallet=${2:-$(_default_wallet)}
 
   if [[ ! "$count" =~ ^[1-9][0-9]*$ ]]; then
-    printf 'Block count must be a positive integer: %s\n' "$count" >&2
+    test_log ERROR actions "Block count must be a positive integer: ${count}"
     return 2
   fi
   {

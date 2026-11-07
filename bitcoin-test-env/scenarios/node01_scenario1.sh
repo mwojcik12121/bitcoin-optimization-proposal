@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# SCENARIO_TITLE: ACP behavior: confirmation-boundary requests
 set -Eeuo pipefail
 
 source /controls/acp_common.sh

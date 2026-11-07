@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# SCENARIO_TITLE: ACP behavior: stale anchor after reorganization
 set -Eeuo pipefail
 
 source /controls/acp_common.sh
@@ -54,15 +53,11 @@ main() {
     return 1
   }
 
-  # First invoke the request carrying the stale precondition. The result and all
-  # wallet, mempool, and relay effects are recorded without judging the outcome.
   options=$(acp_send_options "$anchor_hash" "$ANCHOR_CONFIRMATIONS" true)
   acp_observe_send conditioned_stale_anchor "$ACP_WALLET" "$ACP_SEND_OUTPUTS" "$options"
   conditioned_outcome=$ACP_LAST_OUTCOME
   conditioned_effects=$ACP_LAST_EFFECTS_JSON
 
-  # Then invoke the same payment without the precondition as a control. This is
-  # run on every binary, and its actual effects are recorded in the same format.
   options=$(acp_plain_send_options true)
   acp_observe_send legacy_after_stale_precheck "$ACP_WALLET" "$ACP_SEND_OUTPUTS" "$options"
   legacy_outcome=$ACP_LAST_OUTCOME

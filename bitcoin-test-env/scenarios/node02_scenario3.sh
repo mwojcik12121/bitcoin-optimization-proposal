@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# SCENARIO_TITLE: ACP behavior: reorganization during wallet signing
 set -Eeuo pipefail
 
 source /controls/acp_common.sh
